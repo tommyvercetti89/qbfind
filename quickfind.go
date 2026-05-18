@@ -603,6 +603,9 @@ func main() {
 		if int32(ret) <= 0 {
 			break
 		}
+		if msg.Message == WM_KEYDOWN && msg.WParam == 27 { // 27 = VK_ESCAPE (Escape key)
+			procSetWindowText.Call(app.hSearch, uintptr(unsafe.Pointer(utf16Ptr(""))))
+		}
 		procTranslateMessage.Call(uintptr(unsafe.Pointer(&msg)))
 		procDispatchMessage.Call(uintptr(unsafe.Pointer(&msg)))
 	}

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -142,6 +143,14 @@ func showTextPreview(e fileEntry) bool {
 	text, ok := decodePreviewText(data)
 	if !ok {
 		return false
+	}
+	if ext == "json" {
+		var parsed interface{}
+		if err := json.Unmarshal([]byte(text), &parsed); err == nil {
+			if formatted, err := json.MarshalIndent(parsed, "", "  "); err == nil {
+				text = string(formatted)
+			}
+		}
 	}
 	const maxRunes = 4000
 	runes := []rune(text)
