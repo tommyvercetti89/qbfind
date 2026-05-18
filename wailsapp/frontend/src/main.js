@@ -287,6 +287,13 @@ elSearchInput.addEventListener('input', (e) => {
     }, 150);
 });
 
+elSearchInput.addEventListener('keydown', (e) => {
+    if (e.key === "Escape") {
+        e.preventDefault();
+        elClearSearch.click();
+    }
+})
+
 elClearSearch.addEventListener('click', () => {
     elSearchInput.value = "";
     currentQuery = "";
