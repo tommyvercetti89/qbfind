@@ -96,11 +96,11 @@ const (
 
 	LVM_FIRST                    = 0x1000
 	LVM_GETNEXTITEM              = LVM_FIRST + 12
-	LVM_SETITEMCOUNT             = LVM_FIRST + 22
+	LVM_SETITEMCOUNT             = LVM_FIRST + 47
 	LVM_ENSUREVISIBLE            = LVM_FIRST + 19
 	LVM_SETITEMSTATE             = LVM_FIRST + 43
 	LVM_HITTEST                  = LVM_FIRST + 18
-	LVM_EDITLABELW               = LVM_FIRST + 23
+	LVM_EDITLABELW               = LVM_FIRST + 118
 	LVM_SETCOLUMNW               = LVM_FIRST + 96
 	LVM_INSERTCOLUMNW            = LVM_FIRST + 97
 	LVM_SETEXTENDEDLISTVIEWSTYLE = LVM_FIRST + 54
