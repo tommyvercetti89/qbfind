@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: ["*"]
+  pull_request:
+
+jobs:
+  classic:
+    name: Classic (Win32)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet
+        run: go vet -unsafeptr=false ./...
+
+      - name: Build
+        run: go build -ldflags "-s -w -H windowsgui" -o QBFind_Classic.exe .
+
+      - name: Test
+        run: go test ./...
+
+      - name: Benchmarks (smoke)
+        run: go test -run=^$ -bench=. -benchtime=1x ./...
+
+  wails:
+    name: Premium (Wails)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: wailsapp
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: wailsapp/go.mod
+          cache-dependency-path: wailsapp/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: wailsapp/frontend/package-lock.json
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.11.0
+
+      # Build first: it generates frontend/dist, which is required by //go:embed for vet/build
+      - name: Build
+        run: wails build -clean -trimpath -ldflags "-s -w -X main.AppVersion=${{ github.ref_name }}" -o QBFind_Premium.exe
+
+      - name: Vet
+        run: go vet -unsafeptr=false ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Benchmarks (smoke)
+        run: go test -run=^$ -bench=. -benchtime=1x ./...
+
+      - name: i18n parity check
+        run: npm --prefix frontend run test:i18n

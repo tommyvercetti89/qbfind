@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  classic:
+    name: Classic (Win32)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build -ldflags "-s -w -H windowsgui" -o QBFind_Classic.exe .
+
+      - name: Package
+        shell: pwsh
+        run: Compress-Archive -Path QBFind_Classic.exe -DestinationPath "QBFind_Classic_${{ github.ref_name }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: classic
+          path: QBFind_Classic_*.zip
+
+  wails:
+    name: Premium (Wails)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: wailsapp
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: wailsapp/go.mod
+          cache-dependency-path: wailsapp/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: wailsapp/frontend/package-lock.json
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.11.0
+
+      # NOTE: code signing requires a certificate and is intentionally not configured here.
+      - name: Build (exe + NSIS installer)
+        run: wails build -clean -trimpath -nsis -ldflags "-s -w -X main.AppVersion=${{ github.ref_name }}" -o QBFind_Premium.exe
+
+      - name: Package
+        shell: pwsh
+        run: Compress-Archive -Path "build\bin\QBFind_Premium.exe" -DestinationPath "QBFind_Premium_${{ github.ref_name }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: premium
+          path: |
+            wailsapp/QBFind_Premium_*.zip
+            wailsapp/build/bin/*installer*.exe
+
+  release:
+    name: Publish Release
+    needs: [classic, wails]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            QBFind_Classic_*.zip
+            QBFind_Premium_*.zip
+            *installer*.exe
