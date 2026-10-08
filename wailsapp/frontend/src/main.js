@@ -1,3 +1,4 @@
+﻿import './fonts.css';
 import './style.css';
 import {
     Search,
@@ -9,45 +10,26 @@ import {
     GetLanguage,
     SetLanguage,
     GetAboutMessage,
-    StartScan
+    StartScan,
+    GetExclude,
+    SetExclude,
+    GetDrives,
+    SetDrives,
+    GetHistory,
+    AddHistory,
+    GetSavedSearches,
+    ToggleSavedSearch,
+    CutFiles,
+    DeleteToRecycleBin,
+    RenameFile,
+    StartDrag,
+    CheckForUpdate,
+    OpenURL,
+    GetReleasesURL
 } from '../wailsjs/go/main/App';
 import * as wailsruntime from '../wailsjs/runtime/runtime';
 
-// 1. Translation System Dictionary
-const i18n = {
-    en: {
-        Open: "Open",
-        Preview: "Preview",
-        CopyPath: "Copy Path",
-        Desktop: "Desktop",
-        Explorer: "Explorer",
-        Navigate: "Navigate",
-        Copy: "Copy",
-        StatusMinChars: "Type at least 2 characters. Index: {count} items{suffix}",
-        StatusResults: "Showing {showing} results. Index: {count} items{suffix}",
-        StatusIndex: "Index: {count} items{suffix}",
-        WarnSelect: "Please select a file first.",
-        SearchPlaceholder: "Type at least 2 characters to search (e.g. report.pdf or ext:png)...",
-        Preparing: "Indexing in progress...",
-        AboutTitle: "About QBFind",
-    },
-    tr: {
-        Open: "Aç",
-        Preview: "Önizle",
-        CopyPath: "Yolu Kopyala",
-        Desktop: "Masaüstü",
-        Explorer: "Explorer",
-        Navigate: "Yönlendir",
-        Copy: "Kopyala",
-        StatusMinChars: "En az 2 karakter yazın. İndeks: {count} öğe{suffix}",
-        StatusResults: "{showing} sonuç gösteriliyor. İndeks: {count} öğe{suffix}",
-        StatusIndex: "İndeks: {count} öğe{suffix}",
-        WarnSelect: "Lütfen önce bir dosya seçin.",
-        SearchPlaceholder: "Aramak için en az 2 karakter yazın (örn: rapor.pdf veya ext:png)...",
-        Preparing: "İndeks hazırlanıyor...",
-        AboutTitle: "QBFind Hakkında",
-    }
-};
+import { i18n, tooltipTranslations } from './i18n.js';
 
 // 2. Application State Variables
 let currentLanguage = 'en';
@@ -58,10 +40,14 @@ let isScanning = false;
 let scanSuffix = " (ready)";
 let currentQuery = "";
 let searchTimeout = null;
+let searchSeq = 0;
+let lastIndexCount = -1;
 
 // 3. Select DOM Elements
 const elSearchInput = document.getElementById('search-input');
 const elClearSearch = document.getElementById('btn-clear-search');
+const elSearchHistory = document.getElementById('search-history-list');
+const elBtnSaveSearch = document.getElementById('btn-save-search');
 const elResultsList = document.getElementById('results-list');
 const elStatusIndicator = document.getElementById('status-indicator');
 const elStatusText = document.getElementById('status-text');
@@ -83,8 +69,19 @@ const elPreviewModal = document.getElementById('preview-modal');
 const elPreviewFileName = document.getElementById('preview-file-name');
 const elPreviewFileSize = document.getElementById('preview-file-size');
 const elPreviewContentBox = document.getElementById('preview-content-box');
+const elBtnPreviewOpen = document.getElementById('btn-preview-open');
 const elBtnPreviewCopy = document.getElementById('btn-preview-copy');
 const elBtnPreviewClose = document.getElementById('btn-preview-close');
+let previewItemPath = "";
+
+// Settings Modal
+const elSettingsModal = document.getElementById('settings-modal');
+const elSettingsExclude = document.getElementById('settings-exclude-input');
+const elSettingsDrives = document.getElementById('settings-drives-input');
+const elBtnSettings = document.getElementById('btn-settings');
+const elBtnSettingsSave = document.getElementById('btn-settings-save');
+const elBtnSettingsClose = document.getElementById('btn-settings-close');
+const elBtnSettingsCancel = document.getElementById('btn-settings-cancel');
 
 // Info Modal
 const elInfoModal = document.getElementById('info-modal');
@@ -92,6 +89,7 @@ const elInfoModalTitle = document.getElementById('info-modal-title');
 const elInfoModalText = document.getElementById('info-modal-text');
 const elBtnInfoClose = document.getElementById('btn-info-close');
 const elBtnInfoOk = document.getElementById('btn-info-ok');
+const elBtnCheckUpdate = document.getElementById('btn-check-update');
 
 // Right-Click Context Menu DOM
 const elContextMenu = document.getElementById('context-menu');
@@ -100,6 +98,17 @@ const elCtxPreview = document.getElementById('ctx-preview');
 const elCtxCopyPath = document.getElementById('ctx-copy-path');
 const elCtxDesktop = document.getElementById('ctx-desktop');
 const elCtxExplorer = document.getElementById('ctx-explorer');
+const elCtxCut = document.getElementById('ctx-cut');
+const elCtxRename = document.getElementById('ctx-rename');
+const elCtxDelete = document.getElementById('ctx-delete');
+
+// Rename Modal
+const elRenameModal = document.getElementById('rename-modal');
+const elRenameInput = document.getElementById('rename-input');
+const elBtnRenameSave = document.getElementById('btn-rename-save');
+const elBtnRenameClose = document.getElementById('btn-rename-close');
+const elBtnRenameCancel = document.getElementById('btn-rename-cancel');
+let renameTarget = null;
 
 // Window Controls Action Bindings (Wails British English spellings)
 document.getElementById('btn-minimize').addEventListener('click', () => wailsruntime.WindowMinimise());
@@ -119,12 +128,8 @@ elThemeBtn.addEventListener('click', () => {
     const isLight = document.body.classList.toggle('light-theme');
     localStorage.setItem('theme', isLight ? 'light' : 'dark');
     updateThemeIcon(isLight);
-    showToast(
-        currentLanguage === 'tr' 
-            ? (isLight ? "Açık tema aktif edildi" : "Koyu tema aktif edildi")
-            : (isLight ? "Light theme enabled" : "Dark theme enabled"),
-        "info"
-    );
+    const t = i18n[currentLanguage];
+    showToast(isLight ? t.ThemeEnabledLight : t.ThemeEnabledDark, "info");
 });
 
 function updateThemeIcon(isLight) {
@@ -146,6 +151,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     // Configure initial localization
     applyTranslations();
     updateLanguageToggleUI();
+    renderListPlaceholder();
+    refreshSearchSuggestions();
     
     // Focus search on start
     elSearchInput.focus();
@@ -156,6 +163,15 @@ window.addEventListener('DOMContentLoaded', async () => {
         isScanning = data.scanning;
         scanSuffix = data.suffix;
         updateStatusBar();
+
+        if (currentQuery.trim().length < 2) {
+            renderListPlaceholder();
+            return;
+        }
+        if (data.count !== lastIndexCount) {
+            lastIndexCount = data.count;
+            scheduleSearch(currentQuery);
+        }
     });
 
     wailsruntime.EventsOn("language_changed", (langCode) => {
@@ -163,40 +179,12 @@ window.addEventListener('DOMContentLoaded', async () => {
         applyTranslations();
         updateLanguageToggleUI();
         updateStatusBar();
+        if (currentQuery.trim().length < 2) {
+            renderListPlaceholder();
+        }
     });
 });
 
-// 5. Localization Functions & Tooltips Dictionary
-const tooltipTranslations = {
-    en: {
-        "btn-lang": "Switch Language",
-        "btn-theme": "Toggle Dark/Light Theme",
-        "btn-minimize": "Minimize Window",
-        "btn-maximize": "Maximize Window",
-        "btn-close": "Close Application",
-        "btn-open": "Open Selected (Enter)",
-        "btn-preview": "Preview Text (Space)",
-        "btn-copy-path": "Copy File Path (Ctrl+C)",
-        "btn-desktop": "Copy to Desktop",
-        "btn-explorer": "Reveal in Explorer",
-        "btn-refresh": "Re-index System Drives",
-        "btn-info": "About QBFind"
-    },
-    tr: {
-        "btn-lang": "Dili Değiştir",
-        "btn-theme": "Açık/Koyu Tema Değiştir",
-        "btn-minimize": "Pencereyi Küçült",
-        "btn-maximize": "Pencereyi Büyüt / Ekranı Kapla",
-        "btn-close": "Uygulamayı Kapat",
-        "btn-open": "Seçileni Aç (Enter)",
-        "btn-preview": "Metni Önizle (Space)",
-        "btn-copy-path": "Dosya Yolunu Kopyala (Ctrl+C)",
-        "btn-desktop": "Masaüstüne Kopyala",
-        "btn-explorer": "Dosya Konumunu Aç",
-        "btn-refresh": "Sistem Disklerini Yeniden Tara",
-        "btn-info": "QBFind Hakkında"
-    }
-};
 
 function applyTranslations() {
     const t = i18n[currentLanguage];
@@ -207,8 +195,10 @@ function applyTranslations() {
         if (t[key]) el.textContent = t[key];
     });
     
-    // Update placeholders
+    // Update placeholders and accessibility labels
     elSearchInput.placeholder = t.SearchPlaceholder;
+    elSearchInput.setAttribute('aria-label', t.SearchPlaceholder);
+    elResultsList.setAttribute('aria-label', t.ResultsAria);
 
     // Localize custom responsive tooltips
     const tt = tooltipTranslations[currentLanguage];
@@ -259,7 +249,7 @@ function updateStatusBar() {
     
     const countFormatted = formatNumber(indexedCount);
     
-    if (currentQuery.length < 2) {
+    if (currentQuery.trim().length < 2) {
         elStatusText.textContent = t.StatusMinChars
             .replace('{count}', countFormatted)
             .replace('{suffix}', scanSuffix);
@@ -281,18 +271,15 @@ elSearchInput.addEventListener('input', (e) => {
         elClearSearch.classList.remove('visible');
     }
     
-    clearTimeout(searchTimeout);
-    searchTimeout = setTimeout(() => {
-        performSearch(currentQuery);
-    }, 150);
+    scheduleSearch(currentQuery);
 });
 
-elSearchInput.addEventListener('keydown', (e) => {
-    if (e.key === "Escape") {
-        e.preventDefault();
-        elClearSearch.click();
-    }
-})
+function scheduleSearch(query) {
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => {
+        performSearch(query);
+    }, 150);
+}
 
 elClearSearch.addEventListener('click', () => {
     elSearchInput.value = "";
@@ -311,20 +298,70 @@ async function performSearch(query) {
         return;
     }
     
+    const previousPath = selectedIndex >= 0 && selectedIndex < resultsList.length ? resultsList[selectedIndex].path : "";
+    const seq = ++searchSeq;
     try {
-        resultsList = await Search(query);
-        selectedIndex = resultsList.length > 0 ? 0 : -1;
+        const results = await Search(query);
+        if (seq !== searchSeq) {
+            return;
+        }
+        resultsList = results;
+        let keepIndex = -1;
+        if (previousPath) {
+            keepIndex = resultsList.findIndex((e) => e.path.toLowerCase() === previousPath.toLowerCase());
+        }
+        selectedIndex = keepIndex >= 0 ? keepIndex : (resultsList.length > 0 ? 0 : -1);
         renderResultsList();
         updateStatusBar();
+        AddHistory(query).then(() => refreshSearchSuggestions()).catch(() => {});
     } catch (err) {
         console.error("Search error:", err);
     }
 }
 
+async function refreshSearchSuggestions() {
+    try {
+        const [history, saved] = await Promise.all([GetHistory(), GetSavedSearches()]);
+        const items = [];
+        const seen = new Set();
+        for (const query of [...saved, ...history]) {
+            const key = query.toLowerCase();
+            if (key && !seen.has(key)) {
+                seen.add(key);
+                items.push(query);
+            }
+        }
+        elSearchHistory.replaceChildren(...items.map((query) => {
+            const option = document.createElement('option');
+            option.value = query;
+            return option;
+        }));
+    } catch {
+        // suggestions are non-critical
+    }
+}
+
+async function toggleSavedCurrentSearch() {
+    const query = currentQuery.trim();
+    if (query.length < 2) {
+        return;
+    }
+    const saved = await ToggleSavedSearch(query);
+    const isSaved = saved.some((q) => q.toLowerCase() === query.toLowerCase());
+    const t = i18n[currentLanguage];
+    showToast(isSaved ? t.SearchSaved : t.SearchUnsaved);
+    refreshSearchSuggestions();
+}
+
+elBtnSaveSearch.addEventListener('click', toggleSavedCurrentSearch);
+
 // 9. Premium DOM Rendering Functions
 function renderListPlaceholder() {
     const t = i18n[currentLanguage];
     const countFormatted = formatNumber(indexedCount);
+    resultsWindow = null;
+    renderedStart = -1;
+    renderedEnd = -1;
     
     elResultsList.innerHTML = `
         <div class="results-placeholder">
@@ -334,111 +371,173 @@ function renderListPlaceholder() {
     `;
 }
 
+const ROW_HEIGHT = 38;
+const ROW_OVERSCAN = 8;
+let resultsWindow = null;
+let renderedStart = -1;
+let renderedEnd = -1;
+
 function renderResultsList() {
+    resultsWindow = null;
+    renderedStart = -1;
+    renderedEnd = -1;
+
     if (resultsList.length === 0) {
-        elResultsList.innerHTML = `
-            <div class="results-placeholder">
-                <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
-                <p>No results found for "${currentQuery}"</p>
-            </div>
+        const placeholder = document.createElement('div');
+        placeholder.className = 'results-placeholder';
+        placeholder.innerHTML = `
+            <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
+            <p></p>
         `;
+        placeholder.querySelector('p').textContent = `${i18n[currentLanguage].NoResults} "${currentQuery}"`;
+        elResultsList.replaceChildren(placeholder);
         return;
     }
-    
-    elResultsList.innerHTML = "";
-    resultsList.forEach((e, idx) => {
-        const row = document.createElement('div');
-        row.className = `result-row ${idx === selectedIndex ? 'selected' : ''}`;
-        row.dataset.index = idx;
-        
-        // Icon Badge Determination based on File Ext
-        let badgeClass = 'badge-other';
-        let badgeText = e.isDir ? 'DIR' : 'FILE';
-        
-        if (e.isDir) {
-            badgeClass = 'badge-dir';
-            badgeText = currentLanguage === 'tr' ? 'KLSR' : 'DIR';
-        } else {
-            const ext = e.lowerExt.replace('.', '');
-            if (ext) {
-                badgeText = ext.toUpperCase().slice(0, 4);
-                if (['exe', 'bat', 'cmd', 'lnk', 'url'].includes(ext)) {
-                    badgeClass = 'badge-exe';
-                } else if (['go', 'py', 'js', 'ts', 'html', 'css', 'json', 'md', 'xml'].includes(ext)) {
-                    badgeClass = 'badge-code';
-                } else if (['txt', 'log', 'ini', 'csv', 'yaml', 'yml'].includes(ext)) {
-                    badgeClass = 'badge-text';
-                }
+
+    const windowEl = document.createElement('div');
+    windowEl.style.position = 'relative';
+    windowEl.style.height = `${resultsList.length * ROW_HEIGHT}px`;
+    elResultsList.replaceChildren(windowEl);
+    resultsWindow = windowEl;
+    renderVisibleRows(true);
+    scrollToSelected();
+}
+
+function renderVisibleRows(force) {
+    if (!resultsWindow) return;
+    const total = resultsList.length;
+    const viewport = elResultsList.clientHeight || 400;
+    const scrollTop = elResultsList.scrollTop;
+    const start = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - ROW_OVERSCAN);
+    const end = Math.min(total, Math.ceil((scrollTop + viewport) / ROW_HEIGHT) + ROW_OVERSCAN);
+    if (!force && start === renderedStart && end === renderedEnd) return;
+    renderedStart = start;
+    renderedEnd = end;
+
+    const fragment = document.createDocumentFragment();
+    for (let idx = start; idx < end; idx++) {
+        const row = buildResultRow(resultsList[idx], idx);
+        row.style.position = 'absolute';
+        row.style.top = `${idx * ROW_HEIGHT}px`;
+        row.style.left = '0';
+        row.style.right = '0';
+        row.style.height = `${ROW_HEIGHT}px`;
+        fragment.appendChild(row);
+    }
+    resultsWindow.replaceChildren(fragment);
+}
+
+function buildResultRow(e, idx) {
+    const row = document.createElement('div');
+    row.className = `result-row ${idx === selectedIndex ? 'selected' : ''}`;
+    row.dataset.index = idx;
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', idx === selectedIndex ? 'true' : 'false');
+
+    // Icon Badge Determination based on File Ext
+    let badgeClass = 'badge-other';
+    let badgeText = e.isDir ? 'DIR' : 'FILE';
+
+    if (e.isDir) {
+        badgeClass = 'badge-dir';
+        badgeText = currentLanguage === 'tr' ? 'KLSR' : 'DIR';
+    } else {
+        const ext = e.lowerExt.replace('.', '');
+        if (ext) {
+            badgeText = ext.toUpperCase().slice(0, 4);
+            if (['exe', 'bat', 'cmd', 'lnk', 'url'].includes(ext)) {
+                badgeClass = 'badge-exe';
+            } else if (['go', 'py', 'js', 'ts', 'html', 'css', 'json', 'md', 'xml'].includes(ext)) {
+                badgeClass = 'badge-code';
+            } else if (['txt', 'log', 'ini', 'csv', 'yaml', 'yml'].includes(ext)) {
+                badgeClass = 'badge-text';
             }
         }
+    }
+
+    const sizeFormatted = e.isDir ? '' : formatBytes(e.size);
+    const dateFormatted = formatDate(e.modTime);
+
+    row.innerHTML = `
+        <div class="col-data name-col">
+            <span class="file-icon-badge ${badgeClass}">${badgeText}</span>
+            <span class="file-name"></span>
+        </div>
+        <div class="col-data path-col"></div>
+        <div class="col-data size-col">${sizeFormatted}</div>
+        <div class="col-data modified-col">${dateFormatted}</div>
         
-        const sizeFormatted = e.isDir ? '' : formatBytes(e.size);
-        const dateFormatted = formatDate(e.modTime);
-        
-        row.innerHTML = `
-            <div class="col-data name-col">
-                <span class="file-icon-badge ${badgeClass}">${badgeText}</span>
-                <span class="file-name" title="${e.name}">${e.name}</span>
-            </div>
-            <div class="col-data path-col" title="${e.path}">${e.path}</div>
-            <div class="col-data size-col">${sizeFormatted}</div>
-            <div class="col-data modified-col">${dateFormatted}</div>
-            
-            <!-- Floating Inline Hover Action triggers -->
-            <div class="row-actions-trigger" style="--wails-draggable:none">
-                <button class="row-action-btn quick-open" title="Open File">
-                    <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
-                </button>
-                <button class="row-action-btn quick-copy" title="Copy Path">
-                    <svg viewBox="0 0 24 24"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
-                </button>
-            </div>
-        `;
-        
-        // Row Interactive Listeners
-        row.addEventListener('click', () => {
-            selectRow(idx);
-        });
-        
-        row.addEventListener('dblclick', () => {
-            OpenFile(e.path);
-        });
-        
-        // Inline Action button click binders
-        row.querySelector('.quick-open').addEventListener('click', (ev) => {
-            ev.stopPropagation();
-            OpenFile(e.path);
-        });
-        
-        row.querySelector('.quick-copy').addEventListener('click', async (ev) => {
-            ev.stopPropagation();
-            const msg = await CopyPath(e.path);
-            showToast(msg);
-        });
-        
-        elResultsList.appendChild(row);
+        <!-- Floating Inline Hover Action triggers -->
+        <div class="row-actions-trigger" style="--wails-draggable:none">
+            <button class="row-action-btn quick-open" title="Open File">
+                <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
+            </button>
+            <button class="row-action-btn quick-copy" title="Copy Path">
+                <svg viewBox="0 0 24 24"><path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+            </button>
+        </div>
+    `;
+
+    const nameEl = row.querySelector('.file-name');
+    nameEl.textContent = e.name;
+    nameEl.title = e.name;
+    const pathEl = row.querySelector('.path-col');
+    pathEl.textContent = e.path;
+    pathEl.title = e.path;
+
+    // Native OLE drag-out (CF_HDROP) handled by the Go backend
+    row.draggable = true;
+    row.addEventListener('dragstart', (ev) => {
+        ev.preventDefault();
+        StartDrag([e.path]).catch(() => {});
     });
-    
-    // Auto-scroll to selected row
-    const selectedEl = elResultsList.querySelector('.result-row.selected');
-    if (selectedEl) {
-        selectedEl.scrollIntoView({ block: 'nearest' });
+
+    row.addEventListener('click', () => {
+        selectRow(idx);
+    });
+
+    row.addEventListener('dblclick', () => {
+        OpenFile(e.path);
+    });
+
+    row.querySelector('.quick-open').addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        OpenFile(e.path);
+    });
+
+    row.querySelector('.quick-copy').addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        const msg = await CopyPath(e.path);
+        showToast(msg);
+    });
+
+    return row;
+}
+
+elResultsList.addEventListener('scroll', () => renderVisibleRows(false));
+window.addEventListener('resize', () => {
+    renderedStart = -1;
+    renderVisibleRows(true);
+});
+
+function scrollToSelected() {
+    if (selectedIndex < 0) return;
+    const top = selectedIndex * ROW_HEIGHT;
+    const bottom = top + ROW_HEIGHT;
+    const viewTop = elResultsList.scrollTop;
+    const viewBottom = viewTop + elResultsList.clientHeight;
+    if (top < viewTop) {
+        elResultsList.scrollTop = top;
+    } else if (bottom > viewBottom) {
+        elResultsList.scrollTop = bottom - elResultsList.clientHeight;
     }
 }
 
 function selectRow(idx) {
     if (idx < 0 || idx >= resultsList.length) return;
     selectedIndex = idx;
-    
-    const rows = elResultsList.querySelectorAll('.result-row');
-    rows.forEach((r, i) => {
-        if (i === selectedIndex) {
-            r.classList.add('selected');
-            r.scrollIntoView({ block: 'nearest' });
-        } else {
-            r.classList.remove('selected');
-        }
-    });
+    scrollToSelected();
+    renderVisibleRows(true);
 }
 
 // 10. Keydown Bindings for Fluid Keyboard Navigation
@@ -454,6 +553,20 @@ window.addEventListener('keydown', (e) => {
     if (elInfoModal.classList.contains('visible')) {
         if (e.key === 'Escape' || e.key === 'Enter') {
             closeInfoModal();
+            e.preventDefault();
+        }
+        return;
+    }
+    if (elSettingsModal.classList.contains('visible')) {
+        if (e.key === 'Escape') {
+            closeSettingsModal();
+            e.preventDefault();
+        }
+        return;
+    }
+    if (elRenameModal.classList.contains('visible')) {
+        if (e.key === 'Escape') {
+            closeRenameModal();
             e.preventDefault();
         }
         return;
@@ -486,10 +599,10 @@ window.addEventListener('keydown', (e) => {
             break;
             
         case 'Enter':
-            if (selectedIndex >= 0) {
+            if (selectedIndex >= 0 && e.target !== elSearchInput) {
                 OpenFile(resultsList[selectedIndex].path);
+                e.preventDefault();
             }
-            e.preventDefault();
             break;
             
         case ' ':
@@ -515,12 +628,100 @@ window.addEventListener('keydown', (e) => {
             
         case 'c':
         case 'C':
-            // Ctrl+C copies path of selected item
-            if (e.ctrlKey && selectedIndex >= 0) {
+            // Ctrl+C copies path of selected item (allow native copy inside the search box)
+            if (e.ctrlKey && selectedIndex >= 0 && e.target !== elSearchInput) {
                 triggerCopyPath();
                 e.preventDefault();
             }
             break;
+
+        case 'd':
+        case 'D':
+            if (e.ctrlKey) {
+                toggleSavedCurrentSearch();
+                e.preventDefault();
+            }
+            break;
+
+        case 'x':
+        case 'X':
+            if (e.ctrlKey && selectedIndex >= 0 && e.target !== elSearchInput) {
+                cutSelectedItem();
+                e.preventDefault();
+            }
+            break;
+
+        case 'Delete':
+            if (selectedIndex >= 0 && e.target !== elSearchInput) {
+                deleteSelectedItem();
+                e.preventDefault();
+            }
+            break;
+
+        case 'F2':
+            if (selectedIndex >= 0 && e.target !== elSearchInput) {
+                openRenameModal();
+                e.preventDefault();
+            }
+            break;
+    }
+});
+
+async function cutSelectedItem() {
+    const item = await getSelected();
+    if (!item) return;
+    const msg = await CutFiles([item.path]);
+    showToast(msg);
+}
+
+async function deleteSelectedItem() {
+    const item = await getSelected();
+    if (!item) return;
+    const msg = await DeleteToRecycleBin([item.path]);
+    showToast(msg);
+    if (currentQuery.trim().length >= 2) {
+        scheduleSearch(currentQuery);
+    }
+}
+
+function openRenameModal() {
+    getSelected().then((item) => {
+        if (!item) return;
+        renameTarget = item;
+        elRenameInput.value = item.name;
+        elRenameModal.classList.add('visible');
+        elRenameInput.focus();
+        elRenameInput.select();
+    });
+}
+
+function closeRenameModal() {
+    elRenameModal.classList.remove('visible');
+    renameTarget = null;
+    elSearchInput.focus();
+}
+
+async function commitRename() {
+    if (!renameTarget) return;
+    const target = renameTarget;
+    const msg = await RenameFile(target.path, elRenameInput.value);
+    showToast(msg);
+    closeRenameModal();
+    if (currentQuery.trim().length >= 2) {
+        scheduleSearch(currentQuery);
+    }
+}
+
+elBtnRenameClose.addEventListener('click', closeRenameModal);
+elBtnRenameCancel.addEventListener('click', closeRenameModal);
+elRenameModal.addEventListener('click', (e) => {
+    if (e.target === elRenameModal) closeRenameModal();
+});
+elBtnRenameSave.addEventListener('click', commitRename);
+elRenameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        commitRename();
     }
 });
 
@@ -560,8 +761,12 @@ elBtnExplorer.addEventListener('click', async () => {
 });
 
 elBtnRefresh.addEventListener('click', () => {
+    lastIndexCount = -1;
     StartScan(true);
-    showToast(currentLanguage === 'tr' ? "Sistem diskleri yeniden taranıyor..." : "Re-scanning system drives...");
+    if (currentQuery.trim().length >= 2) {
+        scheduleSearch(currentQuery);
+    }
+    showToast(i18n[currentLanguage].Rescanning);
 });
 
 // 12. Modal Windows Controller
@@ -570,11 +775,30 @@ elBtnInfo.addEventListener('click', async () => {
     const about = await GetAboutMessage();
     elInfoModalTitle.textContent = about.title;
     elInfoModalText.innerHTML = about.message.replace(/\n/g, '<br/>');
+    if (about.version) {
+        document.getElementById('about-version').textContent =
+            `${i18n[currentLanguage].VersionLabel} ${about.version} (Wails Edition)`;
+    }
     elInfoModal.classList.add('visible');
 });
 
 elBtnInfoClose.addEventListener('click', closeInfoModal);
 elBtnInfoOk.addEventListener('click', closeInfoModal);
+elBtnCheckUpdate.addEventListener('click', async () => {
+    const t = i18n[currentLanguage];
+    try {
+        const latest = await CheckForUpdate();
+        if (latest) {
+            showToast(t.UpdateAvailable.replace('{version}', latest));
+            const url = await GetReleasesURL();
+            OpenURL(url);
+        } else {
+            showToast(t.UpToDate);
+        }
+    } catch {
+        showToast(t.UpdateFailed, 'info');
+    }
+});
 elInfoModal.addEventListener('click', (e) => {
     if (e.target === elInfoModal) closeInfoModal();
 });
@@ -584,24 +808,38 @@ function closeInfoModal() {
     elSearchInput.focus();
 }
 
+// Settings Modal controller
+elBtnSettings.addEventListener('click', async () => {
+    elSettingsExclude.value = await GetExclude();
+    elSettingsDrives.value = await GetDrives();
+    elSettingsModal.classList.add('visible');
+    elSettingsExclude.focus();
+});
+
+elBtnSettingsClose.addEventListener('click', closeSettingsModal);
+elBtnSettingsCancel.addEventListener('click', closeSettingsModal);
+elSettingsModal.addEventListener('click', (e) => {
+    if (e.target === elSettingsModal) closeSettingsModal();
+});
+elBtnSettingsSave.addEventListener('click', async () => {
+    await SetExclude(elSettingsExclude.value);
+    const msg = await SetDrives(elSettingsDrives.value);
+    showToast(msg);
+});
+
+function closeSettingsModal() {
+    elSettingsModal.classList.remove('visible');
+    elSearchInput.focus();
+}
+
 // Text Preview Modal
 elBtnPreview.addEventListener('click', openPreview);
-
-function formatPreviewText(fileName, text) {
-    if (!/\.json$/i.test(fileName)) {
-        return text;
-    }
-    try {
-        return JSON.stringify(JSON.parse(text), null, 2);
-    } catch {
-        return text;
-    }
-}
 
 async function openPreview() {
     const item = await getSelected();
     if (!item) return;
     
+    previewItemPath = item.path;
     elPreviewFileName.textContent = item.name;
     elPreviewFileSize.textContent = formatBytes(item.size);
     
@@ -609,18 +847,15 @@ async function openPreview() {
     const ext = item.lowerExt.replace('.', '').toUpperCase();
     extBadge.textContent = ext || 'FILE';
     
-    elPreviewContentBox.textContent = currentLanguage === 'tr' ? 'Yükleniyor...' : 'Loading content...';
+    const t = i18n[currentLanguage];
+    elPreviewContentBox.textContent = t.LoadingPreview;
     elPreviewModal.classList.add('visible');
     
     try {
         const res = await GetPreview(item.path, item.size, item.name);
-        if (res.success) {
-            elPreviewContentBox.textContent = formatPreviewText(item.name, res.text);
-        } else {
-            elPreviewContentBox.textContent = "Error reading file preview.";
-        }
+        elPreviewContentBox.textContent = res.text;
     } catch (err) {
-        elPreviewContentBox.textContent = `Error: ${err}`;
+        elPreviewContentBox.textContent = `${t.ErrorText}: ${err}`;
     }
 }
 
@@ -634,10 +869,41 @@ function closePreviewModal() {
     elSearchInput.focus();
 }
 
-elBtnPreviewCopy.addEventListener('click', () => {
+elBtnPreviewOpen.addEventListener('click', () => {
+    if (previewItemPath) {
+        OpenFile(previewItemPath);
+    }
+});
+
+async function copyText(text) {
+    if (navigator.clipboard) {
+        try {
+            await navigator.clipboard.writeText(text);
+            return true;
+        } catch {
+            // fall through to the legacy path
+        }
+    }
+    try {
+        const area = document.createElement('textarea');
+        area.value = text;
+        area.style.position = 'fixed';
+        area.style.opacity = '0';
+        document.body.appendChild(area);
+        area.select();
+        const ok = document.execCommand('copy');
+        area.remove();
+        return ok;
+    } catch {
+        return false;
+    }
+}
+
+elBtnPreviewCopy.addEventListener('click', async () => {
     const text = elPreviewContentBox.textContent;
-    navigator.clipboard.writeText(text);
-    showToast(currentLanguage === 'tr' ? "Önizleme metni panoya kopyalandı." : "Preview text copied to clipboard.");
+    const ok = await copyText(text);
+    const t = i18n[currentLanguage];
+    showToast(ok ? t.PreviewCopied : t.CopyFailedToast, ok ? 'success' : 'info');
 });
 
 // 13. Data Formatting Helpers
@@ -649,19 +915,15 @@ function formatBytes(bytes) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
+const dateFormatters = {
+    en: new Intl.DateTimeFormat('en-GB', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }),
+    tr: new Intl.DateTimeFormat('tr-TR', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+};
+
 function formatDate(isoString) {
     const date = new Date(isoString);
     if (isNaN(date.getTime())) return '-';
-    
-    const pad = (n) => n.toString().padStart(2, '0');
-    
-    const year = date.getFullYear();
-    const month = pad(date.getMonth() + 1);
-    const day = pad(date.getDate());
-    const hours = pad(date.getHours());
-    const minutes = pad(date.getMinutes());
-    
-    return `${day}.${month}.${year} ${hours}:${minutes}`;
+    return dateFormatters[currentLanguage].format(date);
 }
 
 function formatNumber(num) {
@@ -680,10 +942,14 @@ elResultsList.addEventListener('contextmenu', (e) => {
     const idx = parseInt(row.dataset.index);
     selectRow(idx);
     
-    // Position and display context menu dynamically
-    elContextMenu.style.left = `${e.clientX}px`;
-    elContextMenu.style.top = `${e.clientY}px`;
+    // Position and display context menu, clamped to the viewport
     elContextMenu.style.display = 'block';
+    const menuW = elContextMenu.offsetWidth;
+    const menuH = elContextMenu.offsetHeight;
+    const x = Math.max(4, Math.min(e.clientX, window.innerWidth - menuW - 4));
+    const y = Math.max(4, Math.min(e.clientY, window.innerHeight - menuH - 4));
+    elContextMenu.style.left = `${x}px`;
+    elContextMenu.style.top = `${y}px`;
 });
 
 elCtxOpen.addEventListener('click', async () => {
@@ -713,6 +979,21 @@ elCtxDesktop.addEventListener('click', async () => {
 elCtxExplorer.addEventListener('click', async () => {
     const item = await getSelected();
     if (item) ShowInExplorer(item.path);
+    hideContextMenu();
+});
+
+elCtxCut.addEventListener('click', () => {
+    cutSelectedItem();
+    hideContextMenu();
+});
+
+elCtxRename.addEventListener('click', () => {
+    openRenameModal();
+    hideContextMenu();
+});
+
+elCtxDelete.addEventListener('click', () => {
+    deleteSelectedItem();
     hideContextMenu();
 });
 

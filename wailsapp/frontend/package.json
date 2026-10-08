@@ -2,12 +2,14 @@
   "name": "frontend",
   "private": true,
   "version": "0.0.0",
+  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:i18n": "node tests/i18n-check.mjs"
   },
   "devDependencies": {
-    "vite": "^3.0.7"
+    "vite": "^8.3.4"
   }
 }
