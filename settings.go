@@ -168,7 +168,9 @@ func parseDrives(raw string) []string {
 		if part == "" {
 			continue
 		}
-		part = strings.TrimSuffix(strings.ToUpper(part), ":")
+		part = strings.ToUpper(part)
+		part = strings.TrimSuffix(part, `\`)
+		part = strings.TrimSuffix(part, ":")
 		part = strings.TrimSuffix(part, `\`)
 		if len(part) == 1 && part[0] >= 'A' && part[0] <= 'Z' {
 			out = append(out, part)

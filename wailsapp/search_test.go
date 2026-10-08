@@ -96,6 +96,43 @@ func ensureTestApp() {
 	}
 }
 
+func TestParseDrives(t *testing.T) {
+	got := parseDrives("c; D:; E:\\;XY;")
+	want := []string{"C", "D", "E"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseDrives = %v, want %v", got, want)
+	}
+	if got := parseDrives(""); got != nil {
+		t.Fatalf("parseDrives empty = %v, want nil", got)
+	}
+}
+
+func TestParseExclusions(t *testing.T) {
+	got := parseExclusions(" Node_Modules ; .GIT ;; cache* ")
+	want := []string{"node_modules", ".git", "cache*"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseExclusions = %v, want %v", got, want)
+	}
+}
+
+func TestCompareVersions(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+	}{
+		{"2.0.0", "2.0.0", 0},
+		{"2.0.1", "2.0.0", 1},
+		{"2.0", "2.0.0", 0},
+		{"1.9.9", "2.0.0", -1},
+		{"2.1.0", "2.0.9", 1},
+	}
+	for _, c := range cases {
+		if got := compareVersions(c.a, c.b); got != c.want {
+			t.Errorf("compareVersions(%q,%q) = %d, want %d", c.a, c.b, got, c.want)
+		}
+	}
+}
+
 func TestUIStringsComplete(t *testing.T) {
 	en := reflect.ValueOf(englishUI)
 	tr := reflect.ValueOf(turkishUI)

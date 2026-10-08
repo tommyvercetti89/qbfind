@@ -24,7 +24,6 @@ const (
 
 	LVSIL_SMALL = 1
 
-	SHGFI_ICON               = 0x00000100
 	SHGFI_SMALLICON          = 0x00000001
 	SHGFI_SYSICONINDEX       = 0x00004000
 	SHGFI_USEFILEATTRIBUTES  = 0x00000010
@@ -171,9 +170,6 @@ func iconIndexFor(e fileEntry) int32 {
 func updateSortIndicator() {
 	header, _, _ := procSendMessage.Call(app.hList, LVM_GETHEADER, 0, 0)
 	if header == 0 {
-		return
-	}
-	if headerSortedCol == sortColumn && sortColumn < 0 {
 		return
 	}
 	headerSortedCol = sortColumn
