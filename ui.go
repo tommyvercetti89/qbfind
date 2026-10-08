@@ -6,17 +6,42 @@ import (
 	"unsafe"
 )
 
-func wndProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uintptr {
+func wndProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) (result uintptr) {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("wndProc", r)
+			result = 0
+		}
+	}()
 	switch msg {
 	case WM_CREATE:
 		createMenu(hwnd)
 		createControls(hwnd)
 		layoutControls(hwnd)
-		startIndexing(true)
+		initIndexing()
 		procSetTimer.Call(hwnd, timerRefresh, 700, 0)
 		return 0
 	case WM_SIZE:
 		layoutControls(hwnd)
+		return 0
+	case WM_ERASEBKGND:
+		if darkMode && darkPanelBrush != 0 {
+			return darkErase(hwnd, wParam)
+		}
+	case WM_CTLCOLORSTATIC, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX:
+		if darkMode && darkPanelBrush != 0 {
+			return darkCtlColor(wParam)
+		}
+	case WM_DRAWITEM:
+		if darkMode {
+			drawOwnerButton((*DRAWITEMSTRUCT)(unsafe.Pointer(lParam)))
+			return 1
+		}
+	case WM_GETMINMAXINFO:
+		dpi := windowDpi(hwnd)
+		mmi := (*MINMAXINFO)(unsafe.Pointer(lParam))
+		mmi.PtMinTrackSize.X = int32(480 * dpi / 96)
+		mmi.PtMinTrackSize.Y = int32(320 * dpi / 96)
 		return 0
 	case WM_COMMAND:
 		id := loword(wParam)
@@ -32,6 +57,12 @@ func wndProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uintptr {
 			previewSelected()
 		case idBtnCopyPath:
 			copySelectedPath()
+		case idBtnCut:
+			cutSelectedFiles()
+		case idBtnDelete:
+			deleteSelected()
+		case idBtnRename:
+			renameSelected()
 		case idBtnDesktop:
 			copySelectedToDesktop()
 		case idBtnExplorer:
@@ -46,10 +77,37 @@ func wndProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uintptr {
 		case idMenuAbout:
 			s := ui()
 			info(s.AboutTitle, s.AboutMessage)
+		case idMenuCheckUpdate:
+			checkForUpdates()
 		case idLangEnglish:
 			setLanguage(langEnglish)
 		case idLangTurkish:
 			setLanguage(langTurkish)
+		case idMenuExclude:
+			openSettingsWindow()
+		case idMenuTheme:
+			darkMode = !darkMode
+			saveTheme()
+			createMenu(hwnd)
+			applyTheme()
+		case idMenuSaveSearch:
+			toggleSavedSearch(getWindowText(app.hSearch))
+			createMenu(hwnd)
+		case idMenuClearHistory:
+			saveList("history", nil)
+			lastRecordedQuery = ""
+			createMenu(hwnd)
+		default:
+			switch {
+			case id >= idMenuHistoryBase && id < idMenuHistoryBase+maxMenuItems:
+				if history := loadHistory(); int(id-idMenuHistoryBase) < len(history) {
+					setSearchQuery(history[id-idMenuHistoryBase])
+				}
+			case id >= idMenuSavedBase && id < idMenuSavedBase+maxMenuItems:
+				if saved := loadSavedSearches(); int(id-idMenuSavedBase) < len(saved) {
+					setSearchQuery(saved[id-idMenuSavedBase])
+				}
+			}
 		}
 		return 0
 	case WM_TIMER:
@@ -59,6 +117,16 @@ func wndProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uintptr {
 			runSearch()
 		case timerRefresh:
 			refreshFromIndex()
+		}
+		return 0
+	case WM_SEARCHDONE:
+		if v, ok := pendingSearches.LoadAndDelete(lParam); ok {
+			applySearchResult(v.(*searchResult))
+		}
+		return 0
+	case WM_UIMSG:
+		if v, ok := pendingUI.LoadAndDelete(lParam); ok {
+			showNotice(v.(*uiNotice))
 		}
 		return 0
 	case WM_NOTIFY:
@@ -71,14 +139,34 @@ func wndProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uintptr {
 			case NM_RCLICK:
 				var pt POINT
 				procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
-				selectListItemAtScreen(pt.X, pt.Y)
-				showContextMenu(pt.X, pt.Y)
+				if selectListItemAtScreen(pt.X, pt.Y) {
+					showContextMenu(pt.X, pt.Y)
+				}
 				return 0
 			case LVN_BEGINDRAG:
 				nm := (*NMLISTVIEW)(unsafe.Pointer(lParam))
-				if nm.IItem >= 0 && int(nm.IItem) < len(app.results) {
-					doDragFiles([]string{app.results[nm.IItem].Path})
+				files := make([]string, 0, 4)
+				for _, e := range selectedEntries() {
+					files = append(files, e.Path)
 				}
+				if len(files) == 0 && nm.IItem >= 0 && int(nm.IItem) < len(app.results) {
+					files = append(files, app.results[nm.IItem].Path)
+				}
+				if len(files) > 0 {
+					doDragFiles(files)
+				}
+				return 0
+			case LVN_GETDISPINFO:
+				fillListDisplayInfo((*NMLVDISPINFO)(unsafe.Pointer(lParam)))
+				return 0
+			case LVN_COLUMNCLICK:
+				nm := (*NMLISTVIEW)(unsafe.Pointer(lParam))
+				sortResults(int(nm.ISubItem))
+				return 0
+			case LVN_BEGINLABELEDIT:
+				return 0
+			case LVN_ENDLABELEDIT:
+				applyRename((*NMLVDISPINFO)(unsafe.Pointer(lParam)))
 				return 0
 			}
 		}
@@ -96,6 +184,7 @@ func wndProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uintptr {
 		}
 	case WM_CLOSE:
 		atomicAddInt64(&scanID, 1)
+		stopWatchers()
 	case WM_DESTROY:
 		procPostQuitMessage.Call(0)
 		return 0
@@ -126,7 +215,7 @@ func createControls(hwnd uintptr) {
 	s := ui()
 	app.hLabel = createStatic(hwnd, 0, s.SearchLabel)
 	app.hSearch = createWindow("EDIT", "", WS_CHILD|WS_VISIBLE|WS_BORDER|WS_TABSTOP|ES_AUTOHSCROLL, 0, 0, 0, 0, hwnd, idSearch)
-	app.hList = createWindow("SysListView32", "", WS_CHILD|WS_VISIBLE|WS_BORDER|WS_TABSTOP|WS_CLIPSIBLINGS|LVS_REPORT|LVS_SINGLESEL|LVS_SHOWSELALWAYS, 0, 0, 0, 0, hwnd, idList)
+	app.hList = createWindow("SysListView32", "", WS_CHILD|WS_VISIBLE|WS_BORDER|WS_TABSTOP|WS_CLIPSIBLINGS|LVS_REPORT|LVS_OWNERDATA|LVS_SHOWSELALWAYS|LVS_EDITLABELS, 0, 0, 0, 0, hwnd, idList)
 	app.hStatus = createWindow("STATIC", s.StatusPreparing, WS_CHILD|WS_VISIBLE, 0, 0, 0, 0, hwnd, idStatus)
 
 	setFont(app.hSearch)
@@ -138,6 +227,8 @@ func createControls(hwnd uintptr) {
 	addListColumn(1, s.ColumnPath, 360, LVCFMT_LEFT)
 	addListColumn(2, s.ColumnSize, 80, LVCFMT_RIGHT)
 	addListColumn(3, s.ColumnModified, 130, LVCFMT_LEFT)
+	initShellIcons()
+	updateSortIndicator()
 }
 
 func createMenu(hwnd uintptr) {
@@ -145,6 +236,9 @@ func createMenu(hwnd uintptr) {
 	mainMenu, _, _ := procCreateMenu.Call()
 	fileMenu, _, _ := procCreatePopupMenu.Call()
 	actionMenu, _, _ := procCreatePopupMenu.Call()
+	searchMenu, _, _ := procCreatePopupMenu.Call()
+	historyMenu, _, _ := procCreatePopupMenu.Call()
+	savedMenu, _, _ := procCreatePopupMenu.Call()
 	settingsMenu, _, _ := procCreatePopupMenu.Call()
 	languageMenu, _, _ := procCreatePopupMenu.Call()
 	helpMenu, _, _ := procCreatePopupMenu.Call()
@@ -152,6 +246,9 @@ func createMenu(hwnd uintptr) {
 	appendMenu(fileMenu, MF_STRING, idBtnOpen, s.Open)
 	appendMenu(fileMenu, MF_STRING, idBtnPreview, s.Preview)
 	appendMenu(fileMenu, MF_STRING, idBtnCopyPath, s.CopyPath)
+	appendMenu(fileMenu, MF_STRING, idBtnCut, s.Cut)
+	appendMenu(fileMenu, MF_STRING, idBtnDelete, s.Delete)
+	appendMenu(fileMenu, MF_STRING, idBtnRename, s.Rename)
 	appendMenu(fileMenu, MF_STRING, idBtnExplorer, s.MenuShowExplorer)
 	appendMenu(fileMenu, MF_SEPARATOR, 0, "")
 	appendMenu(fileMenu, MF_STRING, idMenuExit, s.MenuExit)
@@ -159,6 +256,34 @@ func createMenu(hwnd uintptr) {
 	appendMenu(actionMenu, MF_STRING, idBtnDesktop, s.MenuCopyDesktop)
 	appendMenu(actionMenu, MF_STRING, idBtnRefresh, s.Refresh)
 	appendMenu(actionMenu, MF_STRING, idBtnInfo, s.Info)
+
+	history := loadHistory()
+	if len(history) == 0 {
+		appendMenu(historyMenu, MF_STRING|MF_GRAYED, 0, s.MenuEmpty)
+	} else {
+		for i, query := range history {
+			if i >= maxMenuItems {
+				break
+			}
+			appendMenu(historyMenu, MF_STRING, idMenuHistoryBase+uintptr(i), query)
+		}
+	}
+	saved := loadSavedSearches()
+	if len(saved) == 0 {
+		appendMenu(savedMenu, MF_STRING|MF_GRAYED, 0, s.MenuEmpty)
+	} else {
+		for i, query := range saved {
+			if i >= maxMenuItems {
+				break
+			}
+			appendMenu(savedMenu, MF_STRING, idMenuSavedBase+uintptr(i), query)
+		}
+	}
+	appendMenu(searchMenu, MF_POPUP, historyMenu, s.MenuHistory)
+	appendMenu(searchMenu, MF_POPUP, savedMenu, s.MenuSavedSearches)
+	appendMenu(searchMenu, MF_SEPARATOR, 0, "")
+	appendMenu(searchMenu, MF_STRING, idMenuSaveSearch, s.MenuSaveCurrent)
+	appendMenu(searchMenu, MF_STRING, idMenuClearHistory, s.MenuClearHistory)
 
 	enFlag := uintptr(MF_STRING)
 	trFlag := uintptr(MF_STRING)
@@ -169,16 +294,30 @@ func createMenu(hwnd uintptr) {
 	}
 	appendMenu(languageMenu, enFlag, idLangEnglish, s.MenuEnglish)
 	appendMenu(languageMenu, trFlag, idLangTurkish, s.MenuTurkish)
+	themeFlag := uintptr(MF_STRING)
+	if darkMode {
+		themeFlag |= MF_CHECKED
+	}
+	appendMenu(settingsMenu, themeFlag, idMenuTheme, s.MenuDarkMode)
+	appendMenu(settingsMenu, MF_SEPARATOR, 0, "")
+	appendMenu(settingsMenu, MF_STRING, idMenuExclude, s.MenuExclude)
+	appendMenu(settingsMenu, MF_SEPARATOR, 0, "")
 	appendMenu(settingsMenu, MF_POPUP, languageMenu, s.MenuLanguage)
 
+	appendMenu(helpMenu, MF_STRING, idMenuCheckUpdate, s.MenuCheckUpdate)
 	appendMenu(helpMenu, MF_STRING, idMenuAbout, s.MenuAbout)
 
 	appendMenu(mainMenu, MF_POPUP, fileMenu, s.MenuFile)
 	appendMenu(mainMenu, MF_POPUP, actionMenu, s.MenuActions)
+	appendMenu(mainMenu, MF_POPUP, searchMenu, s.MenuSearch)
 	appendMenu(mainMenu, MF_POPUP, settingsMenu, s.MenuSettings)
 	appendMenu(mainMenu, MF_POPUP, helpMenu, s.MenuHelp)
 	procSetMenu.Call(hwnd, mainMenu)
 	procDrawMenuBar.Call(hwnd)
+	if app.hMenu != 0 && app.hMenu != mainMenu {
+		procDestroyMenu.Call(app.hMenu)
+	}
+	app.hMenu = mainMenu
 }
 
 func appendMenu(menu uintptr, flags uintptr, id uintptr, text string) {
@@ -321,4 +460,20 @@ func info(title, msg string) {
 
 func warn(msg string) {
 	procMessageBox.Call(app.hwnd, uintptr(unsafe.Pointer(utf16Ptr(msg))), uintptr(unsafe.Pointer(utf16Ptr(appTitle))), MB_OK|MB_ICONWARNING)
+}
+
+func showNotice(n *uiNotice) {
+	if n.url == "" {
+		info(n.title, n.text)
+		return
+	}
+	ret, _, _ := procMessageBox.Call(
+		app.hwnd,
+		uintptr(unsafe.Pointer(utf16Ptr(n.text))),
+		uintptr(unsafe.Pointer(utf16Ptr(n.title))),
+		MB_YESNO|MB_ICONINFORMATION,
+	)
+	if ret == IDYES {
+		shellExecute(app.hwnd, "open", n.url, "", "")
+	}
 }

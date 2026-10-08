@@ -52,6 +52,9 @@ func setLanguage(language string) {
 }
 
 func updateLanguageUI() {
+	if settingsHwnd != 0 {
+		procSendMessage.Call(settingsHwnd, WM_CLOSE, 0, 0)
+	}
 	s := ui()
 	if app.hwnd != 0 {
 		procSetWindowText.Call(app.hwnd, uintptr(unsafe.Pointer(utf16Ptr(appTitle))))
@@ -79,22 +82,33 @@ func updateLanguageUI() {
 	}
 }
 
-func loadLanguage() string {
+func loadSettings() map[string]string {
+	out := make(map[string]string)
 	path := configPath()
 	if path == "" {
-		return langEnglish
+		return out
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return langEnglish
+		return out
 	}
-	if strings.TrimSpace(string(data)) == langTurkish {
-		return langTurkish
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if i := strings.Index(line, "="); i > 0 {
+			out[strings.TrimSpace(line[:i])] = strings.TrimSpace(line[i+1:])
+			continue
+		}
+		if out["language"] == "" {
+			out["language"] = line
+		}
 	}
-	return langEnglish
+	return out
 }
 
-func saveLanguage(language string) {
+func saveSettings(settings map[string]string) {
 	path := configPath()
 	if path == "" {
 		return
@@ -102,7 +116,147 @@ func saveLanguage(language string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return
 	}
-	_ = os.WriteFile(path, []byte(language), 0600)
+	var b strings.Builder
+	for _, key := range []string{"language", "exclude", "drives", "history", "saved"} {
+		if value, ok := settings[key]; ok && value != "" {
+			fmt.Fprintf(&b, "%s=%s\n", key, value)
+		}
+	}
+	_ = os.WriteFile(path, []byte(b.String()), 0600)
+}
+
+func loadLanguage() string {
+	if loadSettings()["language"] == langTurkish {
+		return langTurkish
+	}
+	return langEnglish
+}
+
+func saveLanguage(language string) {
+	settings := loadSettings()
+	settings["language"] = language
+	saveSettings(settings)
+}
+
+func parseExclusions(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		out = append(out, searchFold(part))
+	}
+	return out
+}
+
+func loadExclusions() []string {
+	return parseExclusions(loadSettings()["exclude"])
+}
+
+func setExclusions(raw string) {
+	settings := loadSettings()
+	settings["exclude"] = raw
+	saveSettings(settings)
+	excludeSegments = parseExclusions(raw)
+}
+
+func parseDrives(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		part = strings.TrimSuffix(strings.ToUpper(part), ":")
+		part = strings.TrimSuffix(part, `\`)
+		if len(part) == 1 && part[0] >= 'A' && part[0] <= 'Z' {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func loadDrives() []string {
+	return parseDrives(loadSettings()["drives"])
+}
+
+func setDrives(raw string) {
+	settings := loadSettings()
+	settings["drives"] = raw
+	saveSettings(settings)
+	selectedDrives = parseDrives(raw)
+}
+
+const listSeparator = "|||"
+
+func loadList(key string) []string {
+	raw := loadSettings()[key]
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, listSeparator) {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func saveList(key string, values []string) {
+	settings := loadSettings()
+	settings[key] = strings.Join(values, listSeparator)
+	saveSettings(settings)
+}
+
+func loadHistory() []string {
+	return loadList("history")
+}
+
+func addHistory(query string) []string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return loadHistory()
+	}
+	out := []string{query}
+	for _, item := range loadHistory() {
+		if strings.EqualFold(item, query) {
+			continue
+		}
+		if len(out) >= 15 {
+			break
+		}
+		out = append(out, item)
+	}
+	saveList("history", out)
+	return out
+}
+
+func loadSavedSearches() []string {
+	return loadList("saved")
+}
+
+func toggleSavedSearch(query string) []string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return loadSavedSearches()
+	}
+	var out []string
+	found := false
+	for _, item := range loadSavedSearches() {
+		if strings.EqualFold(item, query) {
+			found = true
+			continue
+		}
+		out = append(out, item)
+	}
+	if !found {
+		out = append(out, query)
+	}
+	saveList("saved", out)
+	return out
 }
 
 func configPath() string {

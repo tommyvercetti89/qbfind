@@ -97,6 +97,7 @@ func doDragFiles(files []string) {
 }
 
 func dataObjectQueryInterface(this uintptr, riid uintptr, ppv uintptr) uintptr {
+	defer callbackGuard("dataObjectQueryInterface")
 	if ppv == 0 {
 		return E_POINTER
 	}
@@ -110,17 +111,20 @@ func dataObjectQueryInterface(this uintptr, riid uintptr, ppv uintptr) uintptr {
 }
 
 func dataObjectAddRef(this uintptr) uintptr {
+	defer callbackGuard("dataObjectAddRef")
 	obj := (*dataObject)(unsafe.Pointer(this))
 	return uintptr(atomic.AddInt32(&obj.ref, 1))
 }
 
 func dataObjectRelease(this uintptr) uintptr {
+	defer callbackGuard("dataObjectRelease")
 	obj := (*dataObject)(unsafe.Pointer(this))
 	n := atomic.AddInt32(&obj.ref, -1)
 	return uintptr(n)
 }
 
 func dataObjectGetData(this uintptr, pFormat uintptr, pMedium uintptr) uintptr {
+	defer callbackGuard("dataObjectGetData")
 	if pFormat == 0 || pMedium == 0 {
 		return E_INVALIDARG
 	}
@@ -153,10 +157,12 @@ func dataObjectGetData(this uintptr, pFormat uintptr, pMedium uintptr) uintptr {
 }
 
 func dataObjectGetDataHere(this uintptr, pFormat uintptr, pMedium uintptr) uintptr {
+	defer callbackGuard("dataObjectGetDataHere")
 	return E_NOTIMPL
 }
 
 func dataObjectQueryGetData(this uintptr, pFormat uintptr) uintptr {
+	defer callbackGuard("dataObjectQueryGetData")
 	if pFormat == 0 {
 		return E_INVALIDARG
 	}
@@ -171,6 +177,7 @@ func dataObjectQueryGetData(this uintptr, pFormat uintptr) uintptr {
 }
 
 func dataObjectGetCanonicalFormat(this uintptr, pFormatIn uintptr, pFormatOut uintptr) uintptr {
+	defer callbackGuard("dataObjectGetCanonicalFormat")
 	if pFormatOut != 0 {
 		*(*FORMATETC)(unsafe.Pointer(pFormatOut)) = FORMATETC{}
 	}
@@ -178,10 +185,12 @@ func dataObjectGetCanonicalFormat(this uintptr, pFormatIn uintptr, pFormatOut ui
 }
 
 func dataObjectSetData(this uintptr, pFormat uintptr, pMedium uintptr, release uintptr) uintptr {
+	defer callbackGuard("dataObjectSetData")
 	return E_NOTIMPL
 }
 
 func dataObjectEnumFormatEtc(this uintptr, direction uintptr, ppEnum uintptr) uintptr {
+	defer callbackGuard("dataObjectEnumFormatEtc")
 	if ppEnum == 0 {
 		return E_POINTER
 	}
@@ -195,14 +204,17 @@ func dataObjectEnumFormatEtc(this uintptr, direction uintptr, ppEnum uintptr) ui
 }
 
 func dataObjectDAdvise(this uintptr, pFormat uintptr, advf uintptr, sink uintptr, connection uintptr) uintptr {
+	defer callbackGuard("dataObjectDAdvise")
 	return OLE_E_ADVISENOTSUPPORTED
 }
 
 func dataObjectDUnadvise(this uintptr, connection uintptr) uintptr {
+	defer callbackGuard("dataObjectDUnadvise")
 	return OLE_E_ADVISENOTSUPPORTED
 }
 
 func dataObjectEnumDAdvise(this uintptr, ppEnum uintptr) uintptr {
+	defer callbackGuard("dataObjectEnumDAdvise")
 	return OLE_E_ADVISENOTSUPPORTED
 }
 
@@ -228,6 +240,7 @@ var dropSourceVtblInst = dropSourceVtbl{
 }
 
 func dropSourceQueryInterface(this uintptr, riid uintptr, ppv uintptr) uintptr {
+	defer callbackGuard("dropSourceQueryInterface")
 	if ppv == 0 {
 		return E_POINTER
 	}
@@ -241,16 +254,19 @@ func dropSourceQueryInterface(this uintptr, riid uintptr, ppv uintptr) uintptr {
 }
 
 func dropSourceAddRef(this uintptr) uintptr {
+	defer callbackGuard("dropSourceAddRef")
 	src := (*dropSource)(unsafe.Pointer(this))
 	return uintptr(atomic.AddInt32(&src.ref, 1))
 }
 
 func dropSourceRelease(this uintptr) uintptr {
+	defer callbackGuard("dropSourceRelease")
 	src := (*dropSource)(unsafe.Pointer(this))
 	return uintptr(atomic.AddInt32(&src.ref, -1))
 }
 
 func dropSourceQueryContinueDrag(this uintptr, escapePressed uintptr, keyState uintptr) uintptr {
+	defer callbackGuard("dropSourceQueryContinueDrag")
 	if escapePressed != 0 {
 		return DRAGDROP_S_CANCEL
 	}
@@ -261,6 +277,7 @@ func dropSourceQueryContinueDrag(this uintptr, escapePressed uintptr, keyState u
 }
 
 func dropSourceGiveFeedback(this uintptr, effect uintptr) uintptr {
+	defer callbackGuard("dropSourceGiveFeedback")
 	return DRAGDROP_S_USEDEFAULTCURSORS
 }
 
@@ -308,6 +325,7 @@ func newFormatEnum(index int32) *enumFormat {
 }
 
 func enumFormatQueryInterface(this uintptr, riid uintptr, ppv uintptr) uintptr {
+	defer callbackGuard("enumFormatQueryInterface")
 	if ppv == 0 {
 		return E_POINTER
 	}
@@ -321,11 +339,13 @@ func enumFormatQueryInterface(this uintptr, riid uintptr, ppv uintptr) uintptr {
 }
 
 func enumFormatAddRef(this uintptr) uintptr {
+	defer callbackGuard("enumFormatAddRef")
 	enum := (*enumFormat)(unsafe.Pointer(this))
 	return uintptr(atomic.AddInt32(&enum.ref, 1))
 }
 
 func enumFormatRelease(this uintptr) uintptr {
+	defer callbackGuard("enumFormatRelease")
 	enum := (*enumFormat)(unsafe.Pointer(this))
 	n := atomic.AddInt32(&enum.ref, -1)
 	if n <= 0 {
@@ -335,6 +355,7 @@ func enumFormatRelease(this uintptr) uintptr {
 }
 
 func enumFormatNext(this uintptr, celt uintptr, rgelt uintptr, pceltFetched uintptr) uintptr {
+	defer callbackGuard("enumFormatNext")
 	if rgelt == 0 {
 		return E_POINTER
 	}
@@ -357,6 +378,7 @@ func enumFormatNext(this uintptr, celt uintptr, rgelt uintptr, pceltFetched uint
 }
 
 func enumFormatSkip(this uintptr, celt uintptr) uintptr {
+	defer callbackGuard("enumFormatSkip")
 	enum := (*enumFormat)(unsafe.Pointer(this))
 	enum.index += int32(celt)
 	if int(enum.index) > len(enum.formats) {
@@ -367,12 +389,14 @@ func enumFormatSkip(this uintptr, celt uintptr) uintptr {
 }
 
 func enumFormatReset(this uintptr) uintptr {
+	defer callbackGuard("enumFormatReset")
 	enum := (*enumFormat)(unsafe.Pointer(this))
 	enum.index = 0
 	return S_OK
 }
 
 func enumFormatClone(this uintptr, ppEnum uintptr) uintptr {
+	defer callbackGuard("enumFormatClone")
 	if ppEnum == 0 {
 		return E_POINTER
 	}

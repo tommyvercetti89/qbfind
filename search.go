@@ -3,17 +3,63 @@
 package main
 
 import (
+	"container/heap"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
+	"unsafe"
 )
 
 type searchQuery struct {
-	tokens []string
-	exts   []string
-	phrase string
+	tokens      []string
+	alternates  [][]string
+	names       []string
+	paths       []string
+	folders     []string
+	exts        []string
+	globs       []string
+	fuzzy       []string
+	nameRegexes []*regexp.Regexp
+	pathRegexes []*regexp.Regexp
+	phrase      string
+	sizeMin     int64
+	sizeMax     int64
+	dateMin     int64
+	dateMax     int64
+}
+
+func (q searchQuery) empty() bool {
+	return len(q.tokens) == 0 && len(q.alternates) == 0 && len(q.names) == 0 && len(q.paths) == 0 &&
+		len(q.folders) == 0 && len(q.exts) == 0 && len(q.globs) == 0 && len(q.fuzzy) == 0 &&
+		len(q.nameRegexes) == 0 && len(q.pathRegexes) == 0 &&
+		q.sizeMin < 0 && q.sizeMax < 0 && q.dateMin < 0 && q.dateMax < 0
+}
+
+func matchAnyPart(s, value string) bool {
+	for _, part := range strings.Split(value, "|") {
+		if part != "" && strings.Contains(s, part) {
+			return true
+		}
+	}
+	return false
+}
+
+func isSubsequence(needle, hay string) bool {
+	if needle == "" {
+		return true
+	}
+	i := 0
+	for j := 0; j < len(hay) && i < len(needle); j++ {
+		if hay[j] == needle[i] {
+			i++
+		}
+	}
+	return i == len(needle)
 }
 
 type rankedEntry struct {
@@ -21,78 +67,222 @@ type rankedEntry struct {
 	score int
 }
 
+type scoreHeap []rankedEntry
+
+func worseEntry(a, b rankedEntry) bool {
+	if a.score != b.score {
+		return a.score > b.score
+	}
+	return a.entry.LowerPath > b.entry.LowerPath
+}
+
+func (h scoreHeap) Len() int            { return len(h) }
+func (h scoreHeap) Less(i, j int) bool  { return worseEntry(h[i], h[j]) }
+func (h scoreHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *scoreHeap) Push(x interface{}) { *h = append(*h, x.(rankedEntry)) }
+func (h *scoreHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	*h = old[:n-1]
+	return item
+}
+
+func rankedResults(h scoreHeap) []fileEntry {
+	sort.Slice(h, func(i, j int) bool {
+		if h[i].score != h[j].score {
+			return h[i].score < h[j].score
+		}
+		return h[i].entry.LowerPath < h[j].entry.LowerPath
+	})
+	results := make([]fileEntry, len(h))
+	for i := range h {
+		results[i] = h[i].entry
+	}
+	return results
+}
+
+type searchResult struct {
+	gen     int64
+	keep    string
+	results []fileEntry
+}
+
+var lastRecordedQuery string
+
 func runSearch() {
 	s := ui()
 	query := strings.TrimSpace(getWindowText(app.hSearch))
-	keepPath := selectedPath()
 	app.lastQuery = query
 	if len([]rune(query)) < 2 {
+		atomic.AddInt64(&searchGen, 1)
 		app.results = nil
 		clearList()
 		setStatus(fmt.Sprintf(s.StatusMinChars, formatInt(atomic.LoadInt64(&indexedCount)), scanSuffix()))
 		return
 	}
-	results := searchIndex(query, maxResults)
-	app.results = results
-	fillList(results, keepPath)
-	setStatus(fmt.Sprintf(s.StatusResults, formatInt(int64(len(results))), formatInt(atomic.LoadInt64(&indexedCount)), scanSuffix()))
+	if query != lastRecordedQuery {
+		lastRecordedQuery = query
+		addHistory(query)
+		createMenu(app.hwnd)
+	}
+	requestSearch(query)
+}
+
+func setSearchQuery(query string) {
+	procSetWindowText.Call(app.hSearch, uintptr(unsafe.Pointer(utf16Ptr(query))))
+	runSearch()
+}
+
+func requestSearch(query string) {
+	gen := atomic.AddInt64(&searchGen, 1)
+	keepPath := selectedPath()
+	go func() {
+		results := searchIndex(query, maxResults, gen)
+		if results == nil {
+			return
+		}
+		res := &searchResult{gen: gen, keep: keepPath, results: results}
+		key := uintptr(unsafe.Pointer(res))
+		pendingSearches.Store(key, res)
+		if ret, _, _ := procPostMessage.Call(app.hwnd, WM_SEARCHDONE, 0, key); ret == 0 {
+			pendingSearches.Delete(key)
+		}
+	}()
+}
+
+func applySearchResult(res *searchResult) {
+	if atomic.LoadInt64(&searchGen) != res.gen {
+		return
+	}
+	s := ui()
+	app.results = res.results
+	fillList(res.results, res.keep)
+	setStatus(fmt.Sprintf(s.StatusResults, formatInt(int64(len(res.results))), formatInt(atomic.LoadInt64(&indexedCount)), scanSuffix()))
 }
 
 func refreshFromIndex() {
 	s := ui()
 	count := atomic.LoadInt64(&indexedCount)
-	if count != app.lastIndexedShown {
-		app.lastIndexedShown = count
-		if strings.TrimSpace(app.lastQuery) != "" {
-			runSearch()
-		} else {
-			setStatus(fmt.Sprintf(s.StatusIndex, formatInt(count), scanSuffix()))
-		}
+	scanningNow := int32(0)
+	if atomic.LoadInt32(&scanning) != 0 {
+		scanningNow = 1
+	}
+	if count == app.lastIndexedShown && scanningNow == app.lastScanShown {
+		return
+	}
+	app.lastIndexedShown = count
+	app.lastScanShown = scanningNow
+	if strings.TrimSpace(app.lastQuery) != "" {
+		runSearch()
 		return
 	}
 	setStatus(fmt.Sprintf(s.StatusIndex, formatInt(count), scanSuffix()))
 }
 
-func searchIndex(query string, limit int) []fileEntry {
+func searchIndex(query string, limit int, gen int64) []fileEntry {
 	parsed := parseSearchQuery(query)
-	if len(parsed.tokens) == 0 && len(parsed.exts) == 0 {
+	if parsed.empty() {
 		return nil
 	}
 
-	matches := make([]rankedEntry, 0, limit)
-
 	app.mu.RLock()
-	defer app.mu.RUnlock()
+	entries := app.entries
+	app.mu.RUnlock()
 
-	for _, e := range app.entries {
+	if limit <= 0 {
+		return nil
+	}
+	h := make(scoreHeap, 0, limit)
+
+	for _, e := range entries {
+		if atomic.LoadInt64(&searchGen) != gen {
+			return nil
+		}
 		if !matchesQuery(e, parsed) {
 			continue
 		}
-		matches = append(matches, rankedEntry{entry: e, score: scoreEntry(e, parsed)})
-	}
-
-	sort.SliceStable(matches, func(i, j int) bool {
-		if matches[i].score != matches[j].score {
-			return matches[i].score < matches[j].score
+		item := rankedEntry{entry: e, score: scoreEntry(e, parsed)}
+		if len(h) < limit {
+			heap.Push(&h, item)
+			continue
 		}
-		return matches[i].entry.LowerPath < matches[j].entry.LowerPath
-	})
-	if len(matches) > limit {
-		matches = matches[:limit]
+		if worseEntry(item, h[0]) {
+			continue
+		}
+		h[0] = item
+		heap.Fix(&h, 0)
 	}
-	results := make([]fileEntry, len(matches))
-	for i, match := range matches {
-		results[i] = match.entry
+	if atomic.LoadInt64(&searchGen) != gen {
+		return nil
 	}
-	return results
+	return rankedResults(h)
 }
 
 func parseSearchQuery(query string) searchQuery {
-	rawTokens := strings.Fields(searchFold(query))
-	parsed := searchQuery{}
-	for _, token := range rawTokens {
-		if ext, ok := parseExtensionToken(token); ok {
-			parsed.exts = append(parsed.exts, ext)
+	rawTokens := strings.Fields(query)
+	parsed := searchQuery{sizeMin: -1, sizeMax: -1, dateMin: -1, dateMax: -1}
+	for _, raw := range rawTokens {
+		lower := strings.ToLower(raw)
+		if strings.HasPrefix(lower, "regex:") && len(raw) > 6 {
+			if re, err := regexp.Compile("(?i)" + raw[6:]); err == nil {
+				parsed.nameRegexes = append(parsed.nameRegexes, re)
+			}
+			continue
+		}
+		if strings.HasPrefix(lower, "pathregex:") && len(raw) > 10 {
+			if re, err := regexp.Compile("(?i)" + raw[10:]); err == nil {
+				parsed.pathRegexes = append(parsed.pathRegexes, re)
+			}
+			continue
+		}
+		token := searchFold(raw)
+		if exts, ok := parseExtensionToken(token); ok {
+			parsed.exts = append(parsed.exts, exts...)
+			continue
+		}
+		if value, ok := strings.CutPrefix(token, "name:"); ok && value != "" {
+			parsed.names = append(parsed.names, value)
+			continue
+		}
+		if value, ok := strings.CutPrefix(token, "path:"); ok && value != "" {
+			parsed.paths = append(parsed.paths, value)
+			continue
+		}
+		if value, ok := strings.CutPrefix(token, "folder:"); ok && value != "" {
+			parsed.folders = append(parsed.folders, value)
+			continue
+		}
+		if value, ok := strings.CutPrefix(token, "size:"); ok {
+			if min, max, ok := parseSizeRange(value); ok {
+				parsed.sizeMin, parsed.sizeMax = min, max
+				continue
+			}
+		}
+		if value, ok := strings.CutPrefix(token, "date:"); ok {
+			if min, max, ok := parseDateRange(value, time.Now()); ok {
+				parsed.dateMin, parsed.dateMax = min, max
+				continue
+			}
+		}
+		if strings.HasPrefix(token, "~") && len(token) > 1 {
+			parsed.fuzzy = append(parsed.fuzzy, strings.TrimPrefix(token, "~"))
+			continue
+		}
+		if strings.Contains(token, "|") {
+			var group []string
+			for _, part := range strings.Split(token, "|") {
+				if part != "" {
+					group = append(group, part)
+				}
+			}
+			if len(group) > 1 {
+				parsed.alternates = append(parsed.alternates, group)
+				continue
+			}
+		}
+		if strings.ContainsAny(token, "*?") {
+			parsed.globs = append(parsed.globs, token)
 			continue
 		}
 		parsed.tokens = append(parsed.tokens, token)
@@ -101,7 +291,140 @@ func parseSearchQuery(query string) searchQuery {
 	return parsed
 }
 
-func parseExtensionToken(token string) (string, bool) {
+func parseSizeRange(s string) (int64, int64, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, 0, false
+	}
+	switch {
+	case strings.HasPrefix(s, ">="):
+		if v, ok := parseSize(strings.TrimPrefix(s, ">=")); ok {
+			return v, -1, true
+		}
+	case strings.HasPrefix(s, "<="):
+		if v, ok := parseSize(strings.TrimPrefix(s, "<=")); ok {
+			return 0, v, true
+		}
+	case strings.HasPrefix(s, ">"):
+		if v, ok := parseSize(strings.TrimPrefix(s, ">")); ok {
+			return v + 1, -1, true
+		}
+	case strings.HasPrefix(s, "<"):
+		if v, ok := parseSize(strings.TrimPrefix(s, "<")); ok && v > 0 {
+			return 0, v - 1, true
+		}
+	}
+	if i := strings.Index(s, "-"); i > 0 {
+		min, ok1 := parseSize(s[:i])
+		max, ok2 := parseSize(s[i+1:])
+		if !ok1 || !ok2 || max < min {
+			return 0, 0, false
+		}
+		return min, max, true
+	}
+	if v, ok := parseSize(s); ok {
+		return v, v, true
+	}
+	return 0, 0, false
+}
+
+func parseSize(s string) (int64, bool) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	mult := int64(1)
+	switch {
+	case strings.HasSuffix(s, "tb"):
+		mult = 1 << 40
+		s = strings.TrimSuffix(s, "tb")
+	case strings.HasSuffix(s, "gb"):
+		mult = 1 << 30
+		s = strings.TrimSuffix(s, "gb")
+	case strings.HasSuffix(s, "mb"):
+		mult = 1 << 20
+		s = strings.TrimSuffix(s, "mb")
+	case strings.HasSuffix(s, "kb"):
+		mult = 1 << 10
+		s = strings.TrimSuffix(s, "kb")
+	case strings.HasSuffix(s, "b"):
+		s = strings.TrimSuffix(s, "b")
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || f < 0 {
+		return 0, false
+	}
+	return int64(f * float64(mult)), true
+}
+
+func parseDateRange(s string, now time.Time) (int64, int64, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, 0, false
+	}
+	if strings.HasPrefix(s, ">=") || strings.HasPrefix(s, "<=") || strings.HasPrefix(s, ">") || strings.HasPrefix(s, "<") {
+		op := s[:1]
+		rest := s[1:]
+		if strings.HasPrefix(s, ">=") || strings.HasPrefix(s, "<=") {
+			op = s[:2]
+			rest = s[2:]
+		}
+		start, end, ok := parseDateSpan(rest, now)
+		if !ok {
+			return 0, 0, false
+		}
+		switch op {
+		case ">=":
+			return start, -1, true
+		case ">":
+			return end + 1, -1, true
+		case "<=":
+			return 0, end, true
+		default: // "<"
+			if start <= 0 {
+				return 0, 0, false
+			}
+			return 0, start - 1, true
+		}
+	}
+	start, end, ok := parseDateSpan(s, now)
+	if !ok {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+func parseDateSpan(s string, now time.Time) (int64, int64, bool) {
+	loc := now.Location()
+	dayStart := func(t time.Time) time.Time {
+		return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+	}
+	switch s {
+	case "today":
+		start := dayStart(now)
+		return start.Unix(), start.AddDate(0, 0, 1).Unix() - 1, true
+	case "yesterday":
+		start := dayStart(now).AddDate(0, 0, -1)
+		return start.Unix(), start.AddDate(0, 0, 1).Unix() - 1, true
+	case "week":
+		return dayStart(now).AddDate(0, 0, -7).Unix(), -1, true
+	case "month":
+		return dayStart(now).AddDate(0, -1, 0).Unix(), -1, true
+	}
+	if t, err := time.ParseInLocation("2006-01-02", s, loc); err == nil {
+		return t.Unix(), t.AddDate(0, 0, 1).Unix() - 1, true
+	}
+	if t, err := time.ParseInLocation("2006-01", s, loc); err == nil {
+		return t.Unix(), t.AddDate(0, 1, 0).Unix() - 1, true
+	}
+	if t, err := time.ParseInLocation("2006", s, loc); err == nil {
+		return t.Unix(), t.AddDate(1, 0, 0).Unix() - 1, true
+	}
+	return 0, 0, false
+}
+
+func parseExtensionToken(token string) ([]string, bool) {
 	switch {
 	case strings.HasPrefix(token, "extension:"):
 		token = strings.TrimPrefix(token, "extension:")
@@ -112,13 +435,20 @@ func parseExtensionToken(token string) (string, bool) {
 	case strings.HasPrefix(token, ".") && len(token) > 1:
 		token = strings.TrimPrefix(token, ".")
 	default:
-		return "", false
+		return nil, false
 	}
-	token = strings.Trim(token, ". ")
-	if token == "" || strings.ContainsAny(token, `\/:*?"<>|`) {
-		return "", false
+	var out []string
+	for _, part := range strings.Split(token, "|") {
+		part = strings.Trim(part, ". ")
+		if part == "" || strings.ContainsAny(part, `\/:*?"<>|`) {
+			continue
+		}
+		out = append(out, part)
 	}
-	return token, true
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
 }
 
 func matchesQuery(e fileEntry, query searchQuery) bool {
@@ -138,8 +468,67 @@ func matchesQuery(e fileEntry, query searchQuery) bool {
 			return false
 		}
 	}
-	if len(query.tokens) == 0 {
-		return true
+	for _, want := range query.names {
+		if !matchAnyPart(e.LowerName, want) {
+			return false
+		}
+	}
+	for _, want := range query.paths {
+		if !matchAnyPart(e.LowerPath, want) {
+			return false
+		}
+	}
+	for _, want := range query.folders {
+		if !matchAnyPart(e.LowerPath, want) {
+			return false
+		}
+	}
+	for _, glob := range query.globs {
+		if ok, err := filepath.Match(glob, e.LowerName); err != nil || !ok {
+			return false
+		}
+	}
+	for _, group := range query.alternates {
+		matched := false
+		for _, alt := range group {
+			if strings.Contains(e.LowerPath, alt) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	for _, fuzzy := range query.fuzzy {
+		if !isSubsequence(fuzzy, e.LowerName) && !isSubsequence(fuzzy, e.LowerPath) {
+			return false
+		}
+	}
+	for _, re := range query.nameRegexes {
+		if !re.MatchString(e.LowerName) {
+			return false
+		}
+	}
+	for _, re := range query.pathRegexes {
+		if !re.MatchString(e.LowerPath) {
+			return false
+		}
+	}
+	if query.sizeMin >= 0 && e.Size < query.sizeMin {
+		return false
+	}
+	if query.sizeMax >= 0 && e.Size > query.sizeMax {
+		return false
+	}
+	if query.dateMin >= 0 || query.dateMax >= 0 {
+		ts := e.ModTime.Unix()
+		if query.dateMin >= 0 && ts < query.dateMin {
+			return false
+		}
+		if query.dateMax >= 0 && ts > query.dateMax {
+			return false
+		}
 	}
 	return matchesAll(e.LowerPath, query.tokens)
 }
@@ -173,6 +562,16 @@ func scoreEntry(e fileEntry, query searchQuery) int {
 		if ext == wanted {
 			score -= 120
 			break
+		}
+	}
+	for _, want := range query.names {
+		switch {
+		case e.LowerName == want:
+			score -= 320
+		case strings.HasPrefix(e.LowerName, want):
+			score -= 220
+		case strings.Contains(e.LowerName, want):
+			score -= 130
 		}
 	}
 	if strings.Contains(e.LowerPath, `\setup\`) || strings.Contains(e.LowerPath, `\installer\`) {
