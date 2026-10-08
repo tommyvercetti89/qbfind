@@ -3,11 +3,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -91,9 +93,43 @@ func scanSuffix() string {
 	return s.ScanReady
 }
 
+func copyFailedError(code uintptr) error {
+	return errors.New(strings.Replace(ui().CopyFailed, "{code}", strconv.FormatUint(uint64(code), 10), 1))
+}
+
+func setClipboardFiles(paths []string, move bool) error {
+	if len(paths) == 0 {
+		return errors.New(ui().WarnSelect)
+	}
+	if ret, _, _ := procOpenClipboard.Call(0); ret == 0 {
+		return errors.New(ui().ClipboardOpenFailed)
+	}
+	defer procCloseClipboard.Call()
+	procEmptyClipboard.Call()
+
+	effect := uint32(DROPEFFECT_COPY)
+	if move {
+		effect = DROPEFFECT_MOVE
+	}
+	if hEffect := createDropEffect(effect); hEffect != 0 {
+		if ret, _, _ := procSetClipboardData.Call(uintptr(cfPreferredDropEffect), hEffect); ret == 0 {
+			procGlobalFree.Call(hEffect)
+		}
+	}
+	hDrop := createHDrop(paths)
+	if hDrop == 0 {
+		return errors.New(ui().ClipboardWriteFailed)
+	}
+	if ret, _, _ := procSetClipboardData.Call(CF_HDROP, hDrop); ret == 0 {
+		procGlobalFree.Call(hDrop)
+		return errors.New(ui().ClipboardWriteFailed)
+	}
+	return nil
+}
+
 func setClipboardText(text string) error {
 	if ret, _, _ := procOpenClipboard.Call(0); ret == 0 {
-		return fmt.Errorf(ui().ClipboardOpenFailed)
+		return errors.New(ui().ClipboardOpenFailed)
 	}
 	defer procCloseClipboard.Call()
 	procEmptyClipboard.Call()
@@ -101,12 +137,12 @@ func setClipboardText(text string) error {
 	chars := append(utf16.Encode([]rune(text)), 0)
 	handle, _, _ := procGlobalAlloc.Call(GMEM_MOVEABLE|GMEM_ZEROINIT, uintptr(len(chars)*2))
 	if handle == 0 {
-		return fmt.Errorf(ui().ClipboardWriteFailed)
+		return errors.New(ui().ClipboardWriteFailed)
 	}
 	ptr, _, _ := procGlobalLock.Call(handle)
 	if ptr == 0 {
 		procGlobalFree.Call(handle)
-		return fmt.Errorf(ui().ClipboardWriteFailed)
+		return errors.New(ui().ClipboardWriteFailed)
 	}
 	for i, ch := range chars {
 		*(*uint16)(unsafe.Pointer(ptr + uintptr(i*2))) = ch
@@ -114,7 +150,7 @@ func setClipboardText(text string) error {
 	procGlobalUnlock.Call(handle)
 	if ret, _, _ := procSetClipboardData.Call(CF_UNICODETEXT, handle); ret == 0 {
 		procGlobalFree.Call(handle)
-		return fmt.Errorf(ui().ClipboardWriteFailed)
+		return errors.New(ui().ClipboardWriteFailed)
 	}
 	return nil
 }

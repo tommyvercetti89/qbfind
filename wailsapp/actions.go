@@ -3,7 +3,9 @@
 package main
 
 import (
-	"fmt"
+	"bytes"
+	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"unicode/utf16"
@@ -37,10 +39,10 @@ func shellCopyTo(from string, to string) error {
 	runtimeKeepAlive(fromMulti)
 	runtimeKeepAlive(toMulti)
 	if ret != 0 {
-		return fmt.Errorf(ui().CopyFailed, ret)
+		return copyFailedError(ret)
 	}
 	if op.FAnyOperationsAborted != 0 {
-		return fmt.Errorf(ui().CopyCanceled)
+		return errors.New(ui().CopyCanceled)
 	}
 	return nil
 }
@@ -61,7 +63,13 @@ func getTextPreview(path string, size int64, name string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	const maxRunes = 8000
+	if ext == "json" {
+		var buf bytes.Buffer
+		if err := json.Indent(&buf, []byte(text), "", "  "); err == nil {
+			text = buf.String()
+		}
+	}
+	const maxRunes = 4000
 	runes := []rune(text)
 	if len(runes) > maxRunes {
 		text = string(runes[:maxRunes]) + "\n..."

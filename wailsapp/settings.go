@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,6 +57,17 @@ type uiStrings struct {
 	CopyCanceled         string
 	ClipboardOpenFailed  string
 	ClipboardWriteFailed string
+	SettingsSaved        string
+	Cut                  string
+	Delete               string
+	Rename               string
+	StatusCut            string
+	StatusDeleted        string
+	StatusRenamed        string
+	DeleteFailed         string
+	DeleteTitle          string
+	ConfirmDeleteText    string
+	RenameInvalid        string
 }
 
 var englishUI = uiStrings{
@@ -100,10 +112,21 @@ var englishUI = uiStrings{
 	PreviewTitle:         "Preview",
 	PreviewBinary:        "This file type does not have an in-app text preview. QBFind asked Windows to preview it.",
 	PreviewOpenFailed:    "Windows could not preview this file type.",
-	CopyFailed:           "Copy failed. Code: %d",
+	CopyFailed:           "Copy failed. Code: {code}",
 	CopyCanceled:         "Copy was canceled.",
 	ClipboardOpenFailed:  "Clipboard could not be opened.",
 	ClipboardWriteFailed: "Clipboard could not be written.",
+	SettingsSaved:        "Saved. Re-scan to apply.",
+	Cut:                  "Cut",
+	Delete:               "Delete",
+	Rename:               "Rename",
+	StatusCut:            "Selected items were cut to the clipboard.",
+	StatusDeleted:        "Selected items were moved to the Recycle Bin.",
+	StatusRenamed:        "Item renamed.",
+	DeleteFailed:         "Delete failed. Code: {code}",
+	DeleteTitle:          "Delete",
+	ConfirmDeleteText:    "Move %d selected item(s) to the Recycle Bin?",
+	RenameInvalid:        "Invalid file name.",
 }
 
 var turkishUI = uiStrings{
@@ -148,10 +171,21 @@ var turkishUI = uiStrings{
 	PreviewTitle:         "Önizleme",
 	PreviewBinary:        "Bu dosya türü için uygulama içi metin önizlemesi yok. QBFind Windows'tan önizleme istedi.",
 	PreviewOpenFailed:    "Windows bu dosya türünü önizleyemedi.",
-	CopyFailed:           "Kopyalama başarısız oldu. Kod: %d",
+	CopyFailed:           "Kopyalama başarısız oldu. Kod: {code}",
 	CopyCanceled:         "Kopyalama iptal edildi.",
 	ClipboardOpenFailed:  "Pano açılamadı.",
 	ClipboardWriteFailed: "Panoya yazılamadı.",
+	SettingsSaved:        "Kaydedildi. Uygulamak için yeniden tarayın.",
+	Cut:                  "Kes",
+	Delete:               "Sil",
+	Rename:               "Yeniden Adlandır",
+	StatusCut:            "Seçili öğeler panoya kesildi.",
+	StatusDeleted:        "Seçili öğeler geri dönüşüm kutusuna taşındı.",
+	StatusRenamed:        "Öğe yeniden adlandırıldı.",
+	DeleteFailed:         "Silme başarısız oldu. Kod: {code}",
+	DeleteTitle:          "Sil",
+	ConfirmDeleteText:    "Seçili %d öğe geri dönüşüm kutusuna taşınsın mı?",
+	RenameInvalid:        "Geçersiz dosya adı.",
 }
 
 func ui() uiStrings {
@@ -159,27 +193,6 @@ func ui() uiStrings {
 		return turkishUI
 	}
 	return englishUI
-}
-
-func buttonText(id uintptr) string {
-	s := ui()
-	switch id {
-	case idBtnOpen:
-		return s.Open
-	case idBtnPreview:
-		return s.Preview
-	case idBtnCopyPath:
-		return s.CopyPath
-	case idBtnDesktop:
-		return s.Desktop
-	case idBtnExplorer:
-		return s.Explorer
-	case idBtnRefresh:
-		return s.Refresh
-	case idBtnInfo:
-		return s.Info
-	}
-	return ""
 }
 
 func setLanguage(language string) {
@@ -200,22 +213,33 @@ func updateLanguageUI() {
 	}
 }
 
-func loadLanguage() string {
+func loadSettings() map[string]string {
+	out := make(map[string]string)
 	path := configPath()
 	if path == "" {
-		return langEnglish
+		return out
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return langEnglish
+		return out
 	}
-	if strings.TrimSpace(string(data)) == langTurkish {
-		return langTurkish
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if i := strings.Index(line, "="); i > 0 {
+			out[strings.TrimSpace(line[:i])] = strings.TrimSpace(line[i+1:])
+			continue
+		}
+		if out["language"] == "" {
+			out["language"] = line
+		}
 	}
-	return langEnglish
+	return out
 }
 
-func saveLanguage(language string) {
+func saveSettings(settings map[string]string) {
 	path := configPath()
 	if path == "" {
 		return
@@ -223,7 +247,147 @@ func saveLanguage(language string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return
 	}
-	_ = os.WriteFile(path, []byte(language), 0600)
+	var b strings.Builder
+	for _, key := range []string{"language", "exclude", "drives", "history", "saved"} {
+		if value, ok := settings[key]; ok && value != "" {
+			fmt.Fprintf(&b, "%s=%s\n", key, value)
+		}
+	}
+	_ = os.WriteFile(path, []byte(b.String()), 0600)
+}
+
+func loadLanguage() string {
+	if loadSettings()["language"] == langTurkish {
+		return langTurkish
+	}
+	return langEnglish
+}
+
+func saveLanguage(language string) {
+	settings := loadSettings()
+	settings["language"] = language
+	saveSettings(settings)
+}
+
+func parseExclusions(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		out = append(out, searchFold(part))
+	}
+	return out
+}
+
+func loadExclusions() []string {
+	return parseExclusions(loadSettings()["exclude"])
+}
+
+func setExclusions(raw string) {
+	settings := loadSettings()
+	settings["exclude"] = raw
+	saveSettings(settings)
+	excludeSegments = parseExclusions(raw)
+}
+
+func parseDrives(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		part = strings.TrimSuffix(strings.ToUpper(part), ":")
+		part = strings.TrimSuffix(part, `\`)
+		if len(part) == 1 && part[0] >= 'A' && part[0] <= 'Z' {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func loadDrives() []string {
+	return parseDrives(loadSettings()["drives"])
+}
+
+func setDrives(raw string) {
+	settings := loadSettings()
+	settings["drives"] = raw
+	saveSettings(settings)
+	selectedDrives = parseDrives(raw)
+}
+
+const listSeparator = "|||"
+
+func loadList(key string) []string {
+	raw := loadSettings()[key]
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, listSeparator) {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func saveList(key string, values []string) {
+	settings := loadSettings()
+	settings[key] = strings.Join(values, listSeparator)
+	saveSettings(settings)
+}
+
+func loadHistory() []string {
+	return loadList("history")
+}
+
+func addHistory(query string) []string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return loadHistory()
+	}
+	out := []string{query}
+	for _, item := range loadHistory() {
+		if strings.EqualFold(item, query) {
+			continue
+		}
+		if len(out) >= 15 {
+			break
+		}
+		out = append(out, item)
+	}
+	saveList("history", out)
+	return out
+}
+
+func loadSavedSearches() []string {
+	return loadList("saved")
+}
+
+func toggleSavedSearch(query string) []string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return loadSavedSearches()
+	}
+	var out []string
+	found := false
+	for _, item := range loadSavedSearches() {
+		if strings.EqualFold(item, query) {
+			found = true
+			continue
+		}
+		out = append(out, item)
+	}
+	if !found {
+		out = append(out, query)
+	}
+	saveList("saved", out)
+	return out
 }
 
 func configPath() string {
