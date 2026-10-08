@@ -224,10 +224,11 @@ func applyTheme() {
 	if app.hwnd == 0 {
 		return
 	}
-	buttonStyle := uintptr(BS_PUSHBUTTON)
+	baseStyle := uintptr(WS_CHILD | WS_VISIBLE | WS_TABSTOP)
+	buttonStyle := baseStyle | BS_PUSHBUTTON
 	value := int32(0)
 	if darkMode {
-		buttonStyle = BS_OWNERDRAW
+		buttonStyle = baseStyle | BS_OWNERDRAW
 		value = 1
 	}
 	for _, btn := range app.buttons {
