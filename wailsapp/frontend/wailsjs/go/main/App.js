@@ -42,20 +42,20 @@ export function GetHistory() {
   return window['go']['main']['App']['GetHistory']();
 }
 
-export function GetReleasesURL() {
-  return window['go']['main']['App']['GetReleasesURL']();
-}
-
-export function GetSavedSearches() {
-  return window['go']['main']['App']['GetSavedSearches']();
-}
-
 export function GetLanguage() {
   return window['go']['main']['App']['GetLanguage']();
 }
 
 export function GetPreview(arg1, arg2, arg3) {
   return window['go']['main']['App']['GetPreview'](arg1, arg2, arg3);
+}
+
+export function GetReleasesURL() {
+  return window['go']['main']['App']['GetReleasesURL']();
+}
+
+export function GetSavedSearches() {
+  return window['go']['main']['App']['GetSavedSearches']();
 }
 
 export function OpenFile(arg1) {
@@ -74,10 +74,6 @@ export function Search(arg1) {
   return window['go']['main']['App']['Search'](arg1);
 }
 
-export function StartDrag(arg1) {
-  return window['go']['main']['App']['StartDrag'](arg1);
-}
-
 export function SetDrives(arg1) {
   return window['go']['main']['App']['SetDrives'](arg1);
 }
@@ -94,10 +90,14 @@ export function ShowInExplorer(arg1) {
   return window['go']['main']['App']['ShowInExplorer'](arg1);
 }
 
-export function ToggleSavedSearch(arg1) {
-  return window['go']['main']['App']['ToggleSavedSearch'](arg1);
+export function StartDrag(arg1) {
+  return window['go']['main']['App']['StartDrag'](arg1);
 }
 
 export function StartScan(arg1) {
   return window['go']['main']['App']['StartScan'](arg1);
+}
+
+export function ToggleSavedSearch(arg1) {
+  return window['go']['main']['App']['ToggleSavedSearch'](arg1);
 }

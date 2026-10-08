@@ -24,15 +24,17 @@ export function GetHistory():Promise<Array<string>>;
 
 export function GetLanguage():Promise<string>;
 
+export function GetPreview(arg1:string,arg2:number,arg3:string):Promise<main.PreviewResult>;
+
 export function GetReleasesURL():Promise<string>;
 
 export function GetSavedSearches():Promise<Array<string>>;
 
-export function GetPreview(arg1:string,arg2:number,arg3:string):Promise<main.PreviewResult>;
-
 export function OpenFile(arg1:string):Promise<void>;
 
 export function OpenURL(arg1:string):Promise<void>;
+
+export function RenameFile(arg1:string,arg2:string):Promise<string>;
 
 export function Search(arg1:string):Promise<Array<main.fileEntry>>;
 
@@ -42,12 +44,10 @@ export function SetExclude(arg1:string):Promise<string>;
 
 export function SetLanguage(arg1:string):Promise<void>;
 
-export function RenameFile(arg1:string,arg2:string):Promise<string>;
-
 export function ShowInExplorer(arg1:string):Promise<void>;
 
 export function StartDrag(arg1:Array<string>):Promise<void>;
 
-export function ToggleSavedSearch(arg1:string):Promise<Array<string>>;
-
 export function StartScan(arg1:boolean):Promise<void>;
+
+export function ToggleSavedSearch(arg1:string):Promise<Array<string>>;
