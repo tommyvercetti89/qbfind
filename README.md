@@ -24,10 +24,13 @@
 
 *   **⚡ Parallel Multi-Threaded Scanning**: Implements a high-performance concurrent worker pool dynamically sized based on CPU cores:
     $$\text{Workers} = \min(\max(\text{NumCPU} \times 2, 2), 16)$$
-    Crawls userspace paths (`Desktop`, `Downloads`, `Documents`, etc.) first to ensure instantaneous query availability upon startup.
-*   **🎯 Intelligent Scoring & Ranking Engine**: Sorts search results using a comprehensive ceza/ödül (penalty/reward) scoring algorithm based on path depth, folder priority, executable extensions, and Turkish character folding (`ı, İ, ç, ğ, ö, ş, ü` mappings).
-*   **🔍 In-App Text Preview**: Decodes UTF-8, UTF-16LE, and UTF-16BE files dynamically with Byte Order Mark (BOM) validation, displaying raw text previews up to 4,000 characters.
-*   **🌍 Multilingual Support**: Real-time language switching between English and Turkish, with persistent configurations saved under `%APPDATA%/QBFind/settings.txt`.
+    Crawls userspace paths (`Desktop`, `Downloads`, `Documents`, etc.) first to ensure instantaneous query availability upon startup. Unavailable drives (empty removable media, disconnected network shares) are probed and skipped.
+*   **💾 Persistent Index Cache**: A gzip-compressed snapshot of the index is saved under `%APPDATA%/QBFind` after each scan, so the next launch can search immediately; use **Refresh** to re-scan the system.
+*   **🎯 Intelligent Scoring & Ranking Engine**: Ranks results with a bounded top-N heap using a penalty/reward scoring algorithm based on path depth, folder priority, executable extensions, and Turkish character folding (`ı, İ, ç, ğ, ö, ş, ü` mappings).
+*   **🔎 Rich Query Language**: Supports `ext:pdf` / `.pdf` / `*.pdf`, `name:report`, `path:documents`, `size:>10mb`, `size:1mb-10mb`, `date:today`, `date:>2024-01-01` and glob tokens such as `report*.pdf`.
+*   **🚫 Folder Exclusions**: Semicolon-separated folder names/globs (`node_modules;.git;cache*`) can be excluded from scanning through the in-app settings dialog.
+*   **🔍 In-App Text Preview**: Decodes UTF-8, UTF-16LE, and UTF-16BE files dynamically with Byte Order Mark (BOM) validation, displaying pretty-printed JSON and raw text previews up to 4,000 characters.
+*   **🌍 Multilingual Support**: Real-time language switching between English and Turkish, with persistent configurations saved under `%APPDATA%/QBFind/settings.txt`. The Wails edition ships self-hosted Inter/Outfit fonts and an i18n parity test.
 
 ---
 
@@ -36,29 +39,31 @@
 ### 1. Win32 Classic Message Loop
 ```mermaid
 graph TD
-    A[main.go - LockOSThread] --> B[DLL Procedures & COM Initializers]
+    A[main.go - LockOSThread / DPI Awareness] --> B[DLL Procedures & COM Initializers]
     B --> C[RegisterClassExW & CreateWindowExW]
     C --> D[WndProc Event Router - GetMessageW]
-    D -->|WM_CREATE| E[Initialize native ListView & Controls]
-    D -->|WM_CREATE| F[Background Indexer Goroutine]
-    D -->|WM_COMMAND| G[Actions Manager: Open, Preview, Copy Path, Info]
-    D -->|WM_TIMER| H[Debounced Search Engine]
-    D -->|WM_NOTIFY| I[ListView Context Menu / Drag & Drop]
-    F -->|Worker Pool| J[Drive Crawler -> In-Memory Cache]
+    D -->|WM_CREATE| E[Owner-Data ListView & Controls]
+    D -->|WM_CREATE| F[Cache Load or Background Indexer]
+    D -->|WM_COMMAND / shortcuts| G[Actions Manager: Open, Preview, Copy Path, Info]
+    D -->|WM_TIMER| H[Debounced Background Search]
+    D -->|WM_NOTIFY| I[ListView Context Menu / Column Sort / Drag & Drop]
+    D -->|WM_SEARCHDONE| J[Apply Ranked Results to ListView]
+    F -->|Worker Pool + Exclusions| K[Drive Crawler -> In-Memory Index -> Cache]
 ```
 
 ### 2. Wails Modern IPC Architecture
 ```mermaid
 graph LR
     subgraph Frontend [Vite Webview2 Layer]
-        A[index.html / CSS Variables] <--> B[main.js Event Listeners]
-        B <--> C[Right-Click Context Menu & Tooltips]
+        A[index.html / CSS Variables / Self-hosted Fonts] <--> B[main.js Virtualized List]
+        B <--> C[Context Menu, Modals, Settings & Tooltips]
+        B <--> D[i18n Dictionaries + parity test]
     end
     subgraph Backend [Go Native Layer]
-        D[app.go - IPC Bindings] <--> E[search.go - Normalizer & Scorer]
-        E <--> F[indexer.go - Multi-Threaded Scanner]
+        E[app.go - IPC Bindings & Status Events] <--> F[search.go - Query Parser & Ranked Top-N]
+        F <--> G[indexer.go - Multi-Threaded Scanner + Cache]
     end
-    B <-->|Wails IPC Bindings / Events| D
+    B <-->|Wails IPC Bindings / Events| E
 ```
 
 ---
@@ -66,28 +71,33 @@ graph LR
 ## 📂 Modular File Walkthrough
 
 ### 🚀 Classic Win32 Codebase (Root Directory)
-*   **`quickfind.go`**: Entrypoint (`main`), DLL procedure bindings, Win32 structs, and global variables.
-*   **`ui.go`**: Native `wndProc` routing, child controls creation, layout constraints (`layoutControls`), and dialog popups.
-*   **`listview.go`**: Column definitions, double-click/right-click handlers, and native row insertion.
-*   **`search.go`**: Debounced search trigger, Turkish text normalization (`searchFold`), and scoring/penalty algorithms (`scoreEntry`).
-*   **`indexer.go`**: Concurrent logical drive scanning worker pool, junction/reparse point validation, and folder prioritizer.
-*   **`ole.go`**: Low-level COM interface simulation (VTables) for native Windows Drag-and-Drop (`DoDragDrop`).
-*   **`settings.go`**: Persistent configurations cache and English/Turkish translation registers.
+*   **`quickfind.go`**: Entrypoint (`main`), DLL procedure bindings, Win32 structs, DPI awareness, keyboard shortcuts, and global variables.
+*   **`ui.go`**: Native `wndProc` routing, child controls creation, layout constraints (`layoutControls`), and menu handling.
+*   **`listview.go`**: Owner-data (`LVS_OWNERDATA`) virtual listview, column-click sorting, multi-selection, and context menu.
+*   **`search.go`**: Async search generation pipeline (`WM_SEARCHDONE`), rich query parser (`name:`, `path:`, `size:`, `date:`, globs), Turkish text normalization (`searchFold`), and bounded top-N scoring (`scoreEntry`).
+*   **`indexer.go`**: Concurrent drive scanning worker pool, drive-readiness probing, exclusions, junction/reparse point validation, folder prioritizer, and the persistent gzip index cache.
+*   **`ole.go`**: Low-level COM interface simulation (VTables) for native Windows Drag-and-Drop (`DoDragDrop`), with panic-guarded callbacks.
+*   **`settings.go`**: Key/value settings persistence (language, exclusions) and English/Turkish translation registers.
+*   **`settingswindow.go`**: Native excluded-folders dialog.
 *   **`actions.go`**: Native execution triggers (`ShellExecuteW`), desktop copy operations (`SHFileOperationW`), and metadata previews.
+*   **`log.go`**: Rotating log file writer plus panic guards for callbacks.
 *   **`utils.go`**: String transformations, numeric formatting, clipboard writers, and bitwise macros.
 
 ### ✨ Premium Wails Codebase (`/wailsapp`)
 *   **`wailsapp/main.go`**: Go entrypoint setting up the Wails application instance, options, and windows size constraints.
-*   **`wailsapp/app.go`**: Cross-compiled Go handlers bound to the frontend (search pipelines, clipboard, open file wrappers, scanning).
-*   **`wailsapp/indexer.go`**: Thread-safe parallel index crawler emitting event payloads (`status_update`) back to JS.
-*   **`wailsapp/search.go`**: Token-matching and scoring engines optimized for Wails' memory data-bindings.
+*   **`wailsapp/app.go`**: Cross-compiled Go handlers bound to the frontend (search pipelines, clipboard, open file wrappers, scanning, exclusions, version).
+*   **`wailsapp/indexer.go`**: Thread-safe parallel index crawler with drive probing, exclusions, gzip cache, and `status_update` events back to JS.
+*   **`wailsapp/search.go`**: Query parser and bounded top-N ranking engine.
 *   **`wailsapp/frontend/`**: The modern Webview2 UI stack powered by Vite, HTML5, Vanilla CSS3 (variables custom theme support), and Vanilla JavaScript modules.
+*   **`wailsapp/frontend/src/i18n.js`**: Shared English/Turkish dictionaries, validated by `frontend/tests/i18n-check.mjs`.
 
 ---
 
 ## 🛠️ Compilation & Development Guides
 
-Ensure you have **Go 1.18 or higher** installed. To compile the Premium Edition, you will also need the **Wails CLI** installed (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`).
+The Classic Edition requires the Go version declared in the root `go.mod` (Go 1.26+). To compile the Premium Edition you will also need **Go 1.23+**, **Node.js 18+** and the **Wails CLI** installed (`go install github.com/wailsapp/wails/v2/cmd/wails@v2.11.0`).
+
+> ℹ️ `frontend/dist` is build output and is not committed. Always build the Premium Edition with the Wails CLI, or run `npm run build` inside `wailsapp/frontend` before a plain `go build`.
 
 ### 1. Developing & Building Classic Win32 Edition
 ```powershell
@@ -107,8 +117,23 @@ cd wailsapp
 wails dev
 
 # Compile optimized production standalone .exe
-wails build -o QBFind_Premium.exe -clean -trimpath -ldflags "-s -w"
+wails build -o QBFind_Premium.exe -clean -trimpath -ldflags "-s -w -X main.AppVersion=2.0.0"
 ```
+
+### 3. Quality Checks
+Both editions are checked in CI (`.github/workflows/ci.yml`). Locally:
+
+```powershell
+# Classic Win32 Edition (repository root)
+go vet -unsafeptr=false ./...
+go test ./...
+
+# Premium Wails Edition
+cd wailsapp
+go vet -unsafeptr=false ./...
+```
+
+`-unsafeptr=false` disables only the `unsafeptr` analyzer: the Win32/COM interop intentionally converts callback `uintptr` arguments back to `unsafe.Pointer` (see `CONTRIBUTING.md` for the rationale). All other vet analyzers remain enabled.
 
 ---
 

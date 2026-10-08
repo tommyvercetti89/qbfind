@@ -61,6 +61,34 @@ To maintain high code quality, performance, and cross-compatibility, please foll
     *   **Turkish (`tr`)**
 *   Update these in the translation dictionaries in both `settings.go` (for Win32 Classic) and `main.js` (for Wails Premium).
 
+### D. ✅ Local Quality Checks
+Run these before opening a PR:
+
+```powershell
+# Classic edition (repository root)
+go vet -unsafeptr=false ./...
+go build .
+
+# Premium edition
+cd wailsapp
+go vet -unsafeptr=false ./...
+wails build
+```
+
+**Why `-unsafeptr=false`?** QBFind talks to Win32/COM directly. Callback signatures deliver pointer arguments as `uintptr` (for example the `wndProc` `lParam` and the OLE vtable callbacks in `ole.go`), and the codebase converts them back with `unsafe.Pointer` at the point of use. Go's `unsafeptr` analyzer flags that pattern by design; the conversions are intentional and the pointed-to memory is owned by Windows for the duration of the callback. Only this analyzer is disabled — every other `go vet` check stays enabled.
+
+### E. 📦 Windows Resources (Classic Edition)
+*   The Classic executable metadata (icon, version info) is generated into `resource_windows_amd64.syso` from `versioninfo.json`.
+*   If you change `versioninfo.json`, regenerate the resource file with:
+    ```powershell
+    go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
+    goversioninfo -o resource_windows_amd64.syso versioninfo.json
+    ```
+
+### F. 🌍 i18n Parity (Premium Edition)
+*   Keep `en` and `tr` dictionaries in `wailsapp/frontend/src/i18n.js` in sync. Every `data-i18n` key used in `index.html` must exist in both languages.
+*   Verify with `npm --prefix wailsapp/frontend run test:i18n` (also enforced in CI).
+
 ---
 
 ## 🤝 Need Help?
